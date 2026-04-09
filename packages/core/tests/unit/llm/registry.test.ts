@@ -31,6 +31,13 @@ describe('TextAdapterRegistry', () => {
       expect(adapter.getProvider().id).toBe('deepseek');
     });
 
+    it('should return Ollama adapter for "ollama" provider', () => {
+      const adapter = registry.getAdapter('ollama');
+
+      expect(adapter).toBeDefined();
+      expect(adapter.getProvider().id).toBe('ollama');
+    });
+
     it('should return SiliconFlow adapter for "siliconflow" provider', () => {
       const adapter = registry.getAdapter('siliconflow');
 
@@ -52,6 +59,20 @@ describe('TextAdapterRegistry', () => {
       expect(adapter.getProvider().id).toBe('anthropic');
     });
 
+    it('should return DashScope adapter for "dashscope" provider', () => {
+      const adapter = registry.getAdapter('dashscope');
+
+      expect(adapter).toBeDefined();
+      expect(adapter.getProvider().id).toBe('dashscope');
+    });
+
+    it('should return Cloudflare adapter for "cloudflare" provider', () => {
+      const adapter = registry.getAdapter('cloudflare');
+
+      expect(adapter).toBeDefined();
+      expect(adapter.getProvider().id).toBe('cloudflare');
+    });
+
     it('should be case-insensitive for provider ID', () => {
       const adapter1 = registry.getAdapter('OpenAI');
       const adapter2 = registry.getAdapter('OPENAI');
@@ -62,7 +83,7 @@ describe('TextAdapterRegistry', () => {
 
     it('should throw error for unknown provider', () => {
       expect(() => registry.getAdapter('unknown-provider'))
-        .toThrow('未知文本模型提供商: unknown-provider');
+        .toThrow();
     });
   });
 
@@ -71,11 +92,11 @@ describe('TextAdapterRegistry', () => {
       const providers = registry.getAllProviders();
 
       expect(Array.isArray(providers)).toBe(true);
-      expect(providers.length).toBe(6);
+      expect(providers.length).toBe(12);
 
       const providerIds = providers.map(p => p.id);
       expect(providerIds).toEqual(
-        expect.arrayContaining(['openai', 'deepseek', 'siliconflow', 'zhipu', 'gemini', 'anthropic'])
+        expect.arrayContaining(['openai', 'deepseek', 'siliconflow', 'zhipu', 'gemini', 'anthropic', 'dashscope', 'openrouter', 'modelscope', 'ollama', 'minimax', 'cloudflare'])
       );
     });
 

@@ -2,6 +2,7 @@ import { ref, computed, inject } from 'vue'
 
 import { useI18n } from 'vue-i18n'
 import { useToast } from '../ui/useToast'
+import { getI18nErrorMessage } from '../../utils/error'
 import type {
   ImageProvider,
   ImageModel,
@@ -11,6 +12,7 @@ import type {
   IImageService
 } from '@prompt-optimizer/core'
 import { useModelAdvancedParameters } from './useModelAdvancedParameters'
+import { computeConnectionConfig, normalizeProviderChangeOptions } from './useConnectionConfig'
 
 type EditableImageModelConfig = Omit<ImageModelConfig, 'provider' | 'model'> & {
   provider?: ImageProvider
@@ -18,12 +20,7 @@ type EditableImageModelConfig = Omit<ImageModelConfig, 'provider' | 'model'> & {
 }
 
 const toErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) return error.message
-  try {
-    return String(error)
-  } catch {
-    return 'Unknown error'
-  }
+  return getI18nErrorMessage(error, 'Unknown error')
 }
 
 export function useImageModelManager() {
@@ -152,6 +149,19 @@ export function useImageModelManager() {
     supportsDynamicModels.value && isConnectionConfigured.value && !isLoadingDynamicModels.value
   )
 
+  const canTestConnection = computed(() => {
+    // 测试期间禁用
+    if (isTestingConnection.value) return false
+    // 必须有必需的连接配置
+    if (!isConnectionConfigured.value) return false
+    // 必须有模型 ID（发送请求所需）
+    if (!configForm.value.modelId?.trim()) return false
+    // 必须有 provider
+    if (!configForm.value.providerId) return false
+
+    return true
+  })
+
   // 初始化数据加载
   const loadProviders = async () => {
     isLoadingProviders.value = true
@@ -167,7 +177,16 @@ export function useImageModelManager() {
 
   const loadConfigs = async () => {
     try {
-      configs.value = await imageModelManager.getAllConfigs()
+      const allConfigs = await imageModelManager.getAllConfigs()
+      // 排序：启用的模型在前，然后按显示名称排序
+      configs.value = allConfigs.sort((a: ImageModelConfig, b: ImageModelConfig) => {
+        // 第一级：按启用状态排序（启用的在前）
+        if (a.enabled !== b.enabled) {
+          return a.enabled ? -1 : 1
+        }
+        // 第二级：按名称字母顺序排序
+        return a.name.localeCompare(b.name)
+      })
     } catch (error) {
       console.error('Failed to load configs:', error)
       toast.error(t('image.config.loadFailed'))
@@ -179,10 +198,6 @@ export function useImageModelManager() {
     await imageModelManager.updateConfig(id, updates)
   }
 
-  const addConfig = async (config: ImageModelConfig) => {
-    await imageModelManager.addConfig(config)
-  }
-
   const deleteConfig = async (id: string) => {
     await imageModelManager.deleteConfig(id)
   }
@@ -190,16 +205,9 @@ export function useImageModelManager() {
   // 提供商变更处理（按spec设计的渐进式体验）
   const onProviderChange = async (
     providerId: string,
-    options: boolean | { autoSelectFirstModel?: boolean; resetOverrides?: boolean } = true
+    options: boolean | { autoSelectFirstModel?: boolean; resetOverrides?: boolean; resetConnectionConfig?: boolean } = true
   ) => {
-    const normalized =
-      typeof options === 'boolean'
-        ? { autoSelectFirstModel: options, resetOverrides: options }
-        : {
-            autoSelectFirstModel: options.autoSelectFirstModel ?? true,
-            resetOverrides:
-              options.resetOverrides ?? (options.autoSelectFirstModel ?? true)
-          }
+    const normalized = normalizeProviderChangeOptions(options)
 
     selectedProviderId.value = providerId
     configForm.value.providerId = providerId
@@ -225,14 +233,13 @@ export function useImageModelManager() {
       return
     }
 
-    // 更新默认API地址
+    // 使用共享函数处理连接配置
     const providerMeta = providers.value.find(p => p.id === providerId)
-    if (providerMeta?.defaultBaseURL) {
-      configForm.value.connectionConfig = {
-        baseURL: (configForm.value.connectionConfig?.baseURL) || providerMeta.defaultBaseURL,
-        ...(configForm.value.connectionConfig || {})
-      }
-    }
+    configForm.value.connectionConfig = computeConnectionConfig(
+      configForm.value.connectionConfig,
+      providerMeta,
+      normalized.resetConnectionConfig
+    )
 
     // 1. 立即显示静态模型（即时响应）
     try {
@@ -244,6 +251,10 @@ export function useImageModelManager() {
         const firstModel = staticModels[0]
         selectedModelId.value = firstModel.id
         configForm.value.modelId = firstModel.id
+        // 切换提供商后自动应用第一个模型的默认参数
+        if (firstModel.id && providerId) {
+          applyDefaultsFromModel(false)
+        }
 
         modelLoadingStatus.value = {
           type: 'success',
@@ -420,7 +431,10 @@ export function useImageModelManager() {
           const adapter = registry.getAdapter(selectedProviderId.value)
           selectedModel = adapter.buildDefaultModel(configForm.value.modelId)
         } catch (error) {
-          throw new Error(`无法构建模型 ${configForm.value.modelId}: ${error instanceof Error ? error.message : String(error)}`)
+          throw new Error(
+            `无法构建模型 ${configForm.value.modelId}: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+          )
         }
       }
 
@@ -572,7 +586,10 @@ export function useImageModelManager() {
     configForm.value.modelId = modelId
 
     if (modelId && selectedProviderId.value) {
-      applyDefaultsFromModel()
+      // 编辑模式（configForm.id 存在）：合并参数（保留用户已有配置）
+      // 创建模式：替换参数（使用新模型的默认值）
+      const isEditing = !!configForm.value.id
+      applyDefaultsFromModel(isEditing)
     }
   }
 
@@ -601,7 +618,10 @@ export function useImageModelManager() {
           const adapter = registry.getAdapter(selectedProviderId.value)
           cachedModel = adapter.buildDefaultModel(selectedModelId.value)
         } catch (error) {
-          throw new Error(`无法构建模型 ${selectedModelId.value}: ${error instanceof Error ? error.message : String(error)}`)
+          throw new Error(
+            `无法构建模型 ${selectedModelId.value}: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+          )
         }
       }
 
@@ -696,6 +716,7 @@ export function useImageModelManager() {
     supportsDynamicModels,
     isConnectionConfigured,
     canRefreshModels,
+    canTestConnection,
     currentParameterDefinitions,
     currentParamOverrides,
     availableParameterCount,

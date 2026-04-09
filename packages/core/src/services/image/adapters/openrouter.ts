@@ -1,4 +1,5 @@
 import { AbstractImageProviderAdapter } from './abstract-adapter'
+import { ImageError } from '../errors'
 import type {
   ImageProvider,
   ImageModel,
@@ -7,6 +8,7 @@ import type {
   ImageModelConfig,
   ImageParameterDefinition
 } from '../types'
+import { IMAGE_ERROR_CODES } from '../../../constants/error-codes'
 
 export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
   protected normalizeBaseUrl(base: string): string {
@@ -19,10 +21,10 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
     return {
       id: 'openrouter',
       name: 'OpenRouter',
-      description: 'OpenRouter 图像生成服务',
+      description: 'OpenRouter 图像生成服务，动态获取支持图像输出的模型',
       requiresApiKey: true,
       defaultBaseURL: 'https://openrouter.ai/api/v1',
-      supportsDynamicModels: false,
+      supportsDynamicModels: true,
       connectionSchema: {
         required: ['apiKey'],
         optional: ['baseURL'],
@@ -34,22 +36,92 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
     }
   }
 
+  // 静态预设模型（作为后备）
   getModels(): ImageModel[] {
     return [
       {
-        id: 'google/gemini-2.5-flash-image-preview',
-        name: 'Gemini 2.5 Flash Image Preview',
-        description: 'Google Gemini 2.5 Flash 图像预览版，支持文生图、图生图和多图输入',
+        id: 'google/gemini-2.5-flash-image',
+        name: 'Gemini 2.5 Flash Image (Nano Banana)',
+        description: 'Google Gemini 2.5 Flash 图像模型（通过 OpenRouter），支持文生图、图生图和多轮对话编辑',
         providerId: 'openrouter',
         capabilities: {
           text2image: true,
           image2image: true,
           multiImage: true
         },
-        parameterDefinitions: [],  // OpenRouter 不需要用户配置参数
-        defaultParameterValues: {}  // 无需用户参数
+        parameterDefinitions: [],
+        defaultParameterValues: {}
+      },
+      {
+        id: 'openai/gpt-5-image-mini',
+        name: 'GPT-5 Image Mini',
+        description: 'OpenAI GPT-5 Image Mini（通过 OpenRouter），支持文生图与图生图',
+        providerId: 'openrouter',
+        capabilities: {
+          text2image: true,
+          image2image: true,
+          multiImage: true
+        },
+        parameterDefinitions: [],
+        defaultParameterValues: {}
       }
     ]
+  }
+
+  /**
+   * 动态获取支持图像输出的模型列表
+   * 通过 OpenRouter /models API 获取所有模型，过滤 output_modalities 包含 "image" 的模型
+   */
+  public async getModelsAsync(connectionConfig: Record<string, any>): Promise<ImageModel[]> {
+    const apiKey = connectionConfig?.apiKey
+
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/models', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {})
+        }
+      })
+
+      if (!response.ok) {
+        console.warn(`OpenRouter models API error: ${response.status}`)
+        return this.getModels()
+      }
+
+      const data = await response.json()
+      const models = data.data || []
+
+      // 过滤支持图像输出的模型
+      const imageModels: ImageModel[] = models
+        .filter((model: any) => {
+          const outputModalities = model.architecture?.output_modalities || []
+          return outputModalities.includes('image')
+        })
+        .map((model: any) => {
+          const inputModalities = model.architecture?.input_modalities || []
+          const supportsImageInput = inputModalities.includes('image')
+
+          return {
+            id: model.id,
+            name: model.name || model.id,
+            description: model.description || `${model.name} 图像生成模型`,
+            providerId: 'openrouter',
+            capabilities: {
+              text2image: true,
+              image2image: supportsImageInput,
+              multiImage: supportsImageInput
+            },
+            parameterDefinitions: [],
+            defaultParameterValues: {}
+          }
+        })
+
+      return imageModels.length > 0 ? imageModels : this.getModels()
+    } catch (error) {
+      console.warn('Failed to fetch OpenRouter models:', error)
+      return this.getModels()
+    }
   }
 
   protected getTestImageRequest(testType: 'text2image' | 'image2image'): Omit<ImageRequest, 'configId'> {
@@ -71,7 +143,7 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
       }
     }
 
-    throw new Error(`Unsupported test type: ${testType}`)
+    throw new ImageError(IMAGE_ERROR_CODES.UNSUPPORTED_TEST_TYPE, undefined, { testType })
   }
 
   protected getParameterDefinitions(_modelId: string): readonly ImageParameterDefinition[] {
@@ -93,15 +165,23 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
       }
     ]
 
-    // 如果有输入图像，添加到消息中
-    if (request.inputImage) {
-      const imageContent = request.inputImage.b64
-        ? `data:${request.inputImage.mimeType || 'image/png'};base64,${request.inputImage.b64}`
-        : request.inputImage.url
+    const inputImages =
+      Array.isArray(request.inputImages) && request.inputImages.length > 0
+        ? request.inputImages
+        : request.inputImage
+          ? [request.inputImage]
+          : []
 
+    // 如果有输入图像，添加到消息中
+    if (inputImages.length > 0) {
       messages[0].content = [
         { type: 'text', text: request.prompt },
-        { type: 'image_url', image_url: { url: imageContent } }
+        ...inputImages.map((inputImage) => ({
+          type: 'image_url',
+          image_url: {
+            url: `data:${inputImage.mimeType || 'image/png'};base64,${inputImage.b64}`
+          }
+        }))
       ]
     }
 
@@ -125,7 +205,7 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
     // 解析响应
     const choice = response.choices?.[0]
     if (!choice) {
-      throw new Error('No response choice received from OpenRouter')
+      throw new ImageError(IMAGE_ERROR_CODES.INVALID_RESPONSE_FORMAT)
     }
 
     const message = choice.message
@@ -135,7 +215,7 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
     const resultImages = images.map((img: any) => {
       const dataUrl = img.image_url?.url
       if (!dataUrl || !dataUrl.startsWith('data:')) {
-        throw new Error('Invalid image URL format received from OpenRouter')
+        throw new ImageError(IMAGE_ERROR_CODES.INVALID_RESPONSE_FORMAT)
       }
 
       // 解析 data URL: data:image/png;base64,iVBORw0KGgo...
@@ -170,7 +250,10 @@ export class OpenRouterImageAdapter extends AbstractImageProviderAdapter {
     if (!response.ok) {
       // 直接穿透错误，不做特殊处理
       const errorText = await response.text()
-      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}${errorText ? ': ' + errorText : ''}`)
+      throw new ImageError(
+        IMAGE_ERROR_CODES.GENERATION_FAILED,
+        `OpenRouter API error: ${response.status} ${response.statusText}${errorText ? ': ' + errorText : ''}`
+      )
     }
 
     return await response.json()

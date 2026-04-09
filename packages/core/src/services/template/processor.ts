@@ -1,6 +1,7 @@
 import { Template } from "./types";
 import { Message } from "../llm/types";
 import { Mustache } from "./minimal";
+import { TemplateValidationError } from "./errors";
 import type {
   OptimizationMode,
   ConversationMessage,
@@ -19,19 +20,23 @@ export interface TemplateContext {
   contextMode?: import("../context/types").ContextMode; // 'system' | 'user'
   // 高级模式上下文（可选）
   customVariables?: Record<string, string>; // 自定义变量
-  conversationMessages?: ConversationMessage[]; // 会话消息
   tools?: ToolDefinition[]; // 工具定义信息
   // 格式化的上下文文本（用于模板注入）
   conversationContext?: string; // 格式化的会话上下文
   toolsContext?: string; // 格式化的工具上下文
-  // Allow additional string properties for template flexibility
-  // but with stricter typing than the previous implementation
-  [key: string]:
-    | string
-    | undefined
-    | Record<string, string>
-    | ConversationMessage[]
-    | ToolDefinition[];
+  // 消息优化专用字段
+  messageRole?: string; // 选中消息的角色（system/user）
+  conversationMessages?: any[]; // 带元数据的消息数组（用于模板循环）
+  selectedMessage?: any; // 选中消息的详细信息（用于模板显示）
+  // Allow additional properties for template flexibility
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+type MustacheLambdaRender = (template: string) => string;
+
+interface BuiltInTemplateHelpers {
+  toJson: () => (text: string, render: MustacheLambdaRender) => string;
 }
 
 /**
@@ -48,9 +53,6 @@ export class TemplateProcessor {
     // Validate template content
     this.validateTemplate(template);
 
-    // Validate context compatibility
-    this.validateContextCompatibility(template, context);
-
     // Build messages based on template type
     return this.buildMessages(template, context);
   }
@@ -60,34 +62,15 @@ export class TemplateProcessor {
    */
   private static validateTemplate(template: Template): void {
     if (!template?.content) {
-      throw new Error(
+      throw new TemplateValidationError(
         `Template content is missing or invalid for template: ${template?.id || "unknown"}`,
       );
     }
 
     // Check for empty array content
     if (Array.isArray(template.content) && template.content.length === 0) {
-      throw new Error(
+      throw new TemplateValidationError(
         `Template content cannot be empty for template: ${template.id}`,
-      );
-    }
-  }
-
-  /**
-   * Validate context compatibility with template type
-   */
-  private static validateContextCompatibility(
-    template: Template,
-    context: TemplateContext,
-  ): void {
-    // Check that iteration context requires advanced template
-    const isIterateContext = context.originalPrompt && context.iterateInput;
-    if (isIterateContext && typeof template.content === "string") {
-      throw new Error(
-        `Iteration context requires advanced template (message array format) for variable substitution.\n` +
-          `Template ID: ${template.id}\n` +
-          `Current template type: Simple template (string format)\n` +
-          `Suggestion: Please use message array format template that supports variable substitution`,
       );
     }
   }
@@ -115,13 +98,19 @@ export class TemplateProcessor {
 
     // Advanced template: 使用 Mustache 渲染
     if (Array.isArray(template.content)) {
+      const renderContext = this.createRenderContext(context);
+
       return template.content.map((msg) => {
         // 统一使用 Mustache 渲染
         // Mustache 会：
         // 1. 替换模板中的内置变量（如 {{originalPrompt}}）
         // 2. 自动保留值中的占位符（如 originalPrompt = "写一首{{风格}}的歌"）
         // 3. 支持条件渲染（{{#var}}...{{/var}}）和循环
-        const renderedContent = Mustache.render(msg.content, context);
+        // 确保数组变量至少是空数组，避免 undefined 导致 {{#var}} 块不渲染（Mustache 行为：undefined/null/false 为 false）
+        // 但是我们需要区分“不存在”和“空数组”吗？对于 {{^var}} 来说，undefined/null/empty array 都是 true（取反）
+        // 只要保证 context 中传递了正确的 key 即可。
+
+        const renderedContent = Mustache.render(msg.content, renderContext);
 
         return {
           role: msg.role,
@@ -130,7 +119,7 @@ export class TemplateProcessor {
       });
     }
 
-    throw new Error(
+    throw new TemplateValidationError(
       `Invalid template content format for template: ${template.id}`,
     );
   }
@@ -171,6 +160,22 @@ export class TemplateProcessor {
     return extendedContext;
   }
 
+  private static createRenderContext(
+    context: TemplateContext,
+  ): TemplateContext & { helpers: BuiltInTemplateHelpers } {
+    return {
+      ...context,
+      helpers: this.createBuiltInHelpers(),
+    };
+  }
+
+  private static createBuiltInHelpers(): BuiltInTemplateHelpers {
+    return {
+      toJson: () => (text: string, render: MustacheLambdaRender) =>
+        JSON.stringify(render(text)),
+    };
+  }
+
   /**
    * 处理会话消息：将消息数组转换为文本
    * 用于优化阶段将会话上下文注入到模板中
@@ -184,6 +189,7 @@ export class TemplateProcessor {
       .map((msg) => `${msg.role.toUpperCase()}: ${msg.content}`)
       .join("\n\n");
   }
+
 
   /**
    * 替换会话消息中的变量

@@ -1,5 +1,7 @@
 import { computed, type Ref } from 'vue'
 
+import { isValidVariableName } from '../../types/variable'
+
 
 /**
  * 检测到的变量信息
@@ -41,22 +43,22 @@ export function useVariableDetection(
    * @returns 检测到的变量列表
    */
   const extractVariables = (text: string): DetectedVariable[] => {
-    const regex = /\{\{([^{}\s]+)\}\}/gu;
+    const regex = /\{\{\s*([^\d{}\s][^{}\s]*)\s*\}\}/gu;
     const variables: DetectedVariable[] = [];
     let match;
 
     while ((match = regex.exec(text)) !== null) {
       const name = match[1];
-      // 跳过 Mustache 控制标签 (#、/、^、!、>)
-      if (/^[#/^!>]/u.test(name)) {
-        continue;
+      // 防止异常键/不合法变量名进入高亮与缺失提示
+      if (!isValidVariableName(name)) {
+        continue
       }
       const from = match.index;
       const to = from + match[0].length;
 
       // 分类变量并获取值
       let source: DetectedVariable["source"];
-      let value = "";
+      let value: string;
 
       // 优先级: 预定义 > 全局 > 临时 > 缺失
       if (predefinedVariables.value[name] !== undefined) {

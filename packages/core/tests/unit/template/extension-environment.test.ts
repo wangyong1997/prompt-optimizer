@@ -77,6 +77,39 @@ describe('TemplateProcessor with Mustache (Universal CSP-safe)', () => {
     });
   });
 
+  it('should keep helpers.toJson CSP-safe while rendering JSON evidence', () => {
+    const template: Template = {
+      id: 'json-evidence-test',
+      name: 'Json Evidence Test',
+      content: [
+        {
+          role: 'user',
+          content: `{
+  "originalPrompt": {{#helpers.toJson}}{{{originalPrompt}}}{{/helpers.toJson}}
+}`
+        }
+      ],
+      metadata: {
+        version: '1.0.0',
+        lastModified: Date.now(),
+        author: 'Test',
+        templateType: 'optimize',
+        language: 'zh'
+      },
+      isBuiltin: false
+    };
+
+    const context: TemplateContext = {
+      originalPrompt: 'Hello "world"\n{{item}}'
+    };
+
+    const result = TemplateProcessor.processTemplate(template, context);
+
+    expect(result[0].content).toBe(`{
+  "originalPrompt": "Hello \\"world\\"\\n{{item}}"
+}`);
+  });
+
   it('should process conditional blocks', () => {
     const template: Template = {
       id: 'conditional-test',
@@ -198,29 +231,7 @@ describe('TemplateProcessor with Mustache (Universal CSP-safe)', () => {
     }).toThrow('Template content is missing or invalid');
   });
 
-  it('should validate context compatibility for iteration', () => {
-    // Simple template should not work with iteration context
-    const simpleTemplate: Template = {
-      id: 'simple-iteration-test',
-      name: 'Simple Iteration Test',
-      content: 'Simple template content',
-      metadata: {
-        version: '1.0.0',
-        lastModified: Date.now(),
-        author: 'Test',
-        templateType: 'iterate',
-        language: 'zh'
-      },
-      isBuiltin: false
-    };
-
-    const iterateContext: TemplateContext = {
-      originalPrompt: 'Original prompt',
-      iterateInput: 'Iterate input'
-    };
-
-    expect(() => {
-      TemplateProcessor.processTemplate(simpleTemplate, iterateContext);
-    }).toThrow('Iteration context requires advanced template');
-  });
+  // 注：TemplateProcessor 不再负责迭代上下文检查
+  // 该检查已移至 PromptService.iteratePrompt/iteratePromptStream 入口处
+  // 相关测试已移至 prompt service 测试文件
 });

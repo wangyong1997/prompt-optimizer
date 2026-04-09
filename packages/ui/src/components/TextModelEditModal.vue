@@ -2,24 +2,15 @@
   <NModal
     :show="show"
     preset="card"
-    :style="{ width: '90vw', maxWidth: '1000px', maxHeight: '90vh' }"
-    :title="modalTitle.value"
+    :style="{ width: '90vw', maxWidth: '1000px' }"
+    :title="modalTitle"
     size="large"
     :bordered="false"
     :segmented="true"
     @update:show="handleUpdateShow"
   >
-    <NScrollbar v-if="formReady" style="max-height: 75vh;">
-      <form @submit.prevent="handleSubmit">
+    <form v-if="formReady" @submit.prevent="handleSubmit">
         <NForm label-placement="left" label-width="auto" size="small">
-          <NFormItem v-if="!isEditing" :label="t('modelManager.modelKey')">
-            <NInput
-              v-model:value="form.id"
-              :placeholder="t('modelManager.modelKeyPlaceholder')"
-              required
-            />
-          </NFormItem>
-
           <NFormItem :label="t('modelManager.displayName')">
             <NInput
               v-model:value="form.name"
@@ -49,7 +40,7 @@
           <NFormItem
             v-for="field in connectionFields"
             :key="field.name"
-            :label="field.name === 'apiKey' ? t('modelManager.apiKey') : (field.name === 'baseURL' ? t('modelManager.apiUrl') : field.name)"
+            :label="resolveConnectionFieldLabel(field.name)"
           >
             <template v-if="field.name === 'baseURL'" #label>
               <NSpace align="center" :size="4">
@@ -58,9 +49,31 @@
               </NSpace>
             </template>
 
+            <template v-if="field.name === 'apiKey'" #label>
+              <NSpace align="center" :size="4">
+                <span>{{ t('modelManager.apiKey') }}</span>
+                <NButton
+                  v-if="currentProviderApiKeyUrl"
+                  text
+                  size="tiny"
+                  type="primary"
+                  tag="a"
+                  :href="currentProviderApiKeyUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style="padding: 0 4px;"
+                  :title="t('modelManager.getApiKey')"
+                >
+                  <template #icon>
+                    <ExternalLinkIcon />
+                  </template>
+                </NButton>
+              </NSpace>
+            </template>
+
             <template v-if="field.type === 'string'">
               <NInput
-                v-model:value="form.connectionConfig[field.name]"
+                v-model:value="form.connectionConfig[field.name] as string"
                 :type="field.name.toLowerCase().includes('key') ? 'password' : 'text'"
                 :placeholder="field.placeholder"
                 :required="field.required"
@@ -69,13 +82,13 @@
             </template>
             <template v-else-if="field.type === 'number'">
               <NInputNumber
-                v-model:value="form.connectionConfig[field.name]"
+                v-model:value="form.connectionConfig[field.name] as number"
                 :placeholder="field.placeholder"
                 :required="field.required"
               />
             </template>
             <template v-else-if="field.type === 'boolean'">
-              <NCheckbox v-model:checked="form.connectionConfig[field.name]">
+              <NCheckbox v-model:checked="form.connectionConfig[field.name] as boolean">
                 {{ field.name }}
               </NCheckbox>
             </template>
@@ -139,18 +152,17 @@
           :param-overrides="form.paramOverrides"
           @update:paramOverrides="updateParamOverrides"
         />
-      </form>
-    </NScrollbar>
+    </form>
 
-    <div v-else style="height: 200px; display: flex; align-items: center; justify-content: center;">
+    <NFlex v-else justify="center" align="center" style="height: 200px;">
       <NSpin />
-    </div>
+    </NFlex>
 
     <template #action>
       <NSpace justify="space-between" align="center" style="width: 100%;">
         <NSpace align="center">
           <NButton
-            @click="testFormConnection"
+            @click="handleTestFormConnection"
             :loading="isTestingFormConnection"
             :disabled="!canTestFormConnection"
             secondary
@@ -182,12 +194,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, nextTick } from 'vue'
+import { computed, inject, nextTick, h } from 'vue'
 
 import { useI18n } from 'vue-i18n'
+import { useToast } from '../composables/ui/useToast'
+import { isRunningInElectron } from '@prompt-optimizer/core'
 import {
   NModal,
-  NScrollbar,
   NForm,
   NFormItem,
   NH4,
@@ -196,15 +209,19 @@ import {
   NCheckbox,
   NSelect,
   NSpace,
+  NFlex,
   NButton,
   NDivider,
   NText,
   NTag,
   NTooltip,
-  NSpin
+  NSpin,
+  useDialog
 } from 'naive-ui'
 import ModelAdvancedSection from './ModelAdvancedSection.vue'
+import ExternalLinkIcon from './icons/ExternalLinkIcon.vue'
 import type { TextModelManager } from '../composables/model/useTextModelManager'
+import { resolveTextConnectionFieldLabel } from '../utils/model-connection-label'
 
 const { show } = defineProps({
   show: {
@@ -216,6 +233,8 @@ const { show } = defineProps({
 const emit = defineEmits(['update:show', 'saved'])
 
 const { t } = useI18n()
+const toast = useToast()
+const dialog = useDialog()
 const manager = inject<TextModelManager>('textModelManager')
 if (!manager) {
   throw new Error('Text model manager not provided')
@@ -243,6 +262,40 @@ const isSaving = manager.isSaving
 
 const isEditing = computed(() => !!manager.editingModelId.value)
 
+// 获取当前选择的 Provider 的 API Key URL
+const currentProviderApiKeyUrl = computed(() => {
+  return manager.selectedProvider.value?.apiKeyUrl || null
+})
+
+const resolveConnectionFieldLabel = (fieldName: string) => {
+  return resolveTextConnectionFieldLabel(fieldName, t)
+}
+
+const handleTestFormConnection = async () => {
+  const runTest = async () => {
+    await testFormConnection()
+  }
+
+  if (!isRunningInElectron()) {
+    const provider = manager.selectedProvider.value
+    if (provider?.corsRestricted) {
+      const providerName = provider.name || provider.id || 'Unknown Provider'
+      dialog.warning({
+        title: t('modelManager.corsRestrictedTag'),
+        content: () => h('div', { style: 'white-space: pre-line;' }, t('modelManager.corsRestrictedConfirm', { provider: providerName })),
+        positiveText: t('common.confirm'),
+        negativeText: t('common.cancel'),
+        // Don't block dialog close while the async test runs.
+        onPositiveClick: () => {
+          void runTest()
+        }
+      })
+      return
+    }
+  }
+  await runTest()
+}
+
 const handleUpdateShow = async (value: boolean) => {
   emit('update:show', value)
 
@@ -255,30 +308,54 @@ const handleUpdateShow = async (value: boolean) => {
 }
 
 const handleSubmit = async () => {
-  const id = await manager.saveForm()
-  emit('saved', id || undefined)
-  handleUpdateShow(false)
+  try {
+    const id = await manager.saveForm()
+    emit('saved', id || undefined)
+    handleUpdateShow(false)
+  } catch (error) {
+    console.error('保存模型失败:', error)
+
+    const rawError = error instanceof Error ? error.message : String(error)
+    const fallback = isEditing.value
+      ? t('modelManager.updateFailed', { error: rawError })
+      : t('modelManager.createFailed', { error: rawError })
+
+    const errorCode = (error as { code?: unknown } | null)?.code
+    const errorParams = (error as { params?: unknown } | null)?.params
+
+    if (typeof errorCode === 'string') {
+      try {
+        const translated = t(
+          errorCode,
+          (typeof errorParams === 'object' && errorParams) ? (errorParams as Record<string, unknown>) : {}
+        )
+        if (translated && translated !== errorCode) {
+          toast.error(translated)
+          return
+        }
+      } catch {
+        // fall back
+      }
+    }
+
+    toast.error(rawError || fallback)
+  }
 }
 
 const handleCancel = () => {
   handleUpdateShow(false)
 }
 
-// 处理模型变更（只在非编辑模式或用户主动切换时自动填充参数）
+// 处理模型变更：无论新建还是编辑模式，切换模型都应用新模型的默认参数
 const handleModelChange = (modelId: string) => {
-  if (isEditing.value && form.value.originalId) {
-    // 编辑模式：只更新 modelId，不自动填充参数
-    form.value.modelId = modelId
-    form.value.defaultModel = modelId || ''
-  } else {
-    // 新建模式：调用 onModelChange，会自动填充默认参数
-    onModelChange(modelId)
-  }
+  onModelChange(modelId)
 }
 
 const onProviderChange = (providerId: string) => {
+  // 切换提供商时总是自动选择第一个模型
+  // 因为原来的模型ID在新提供商下可能不存在
   manager.selectProvider(providerId, {
-    autoSelectFirstModel: !isEditing.value,
+    autoSelectFirstModel: true,
     resetOverrides: true,
     resetConnectionConfig: true
   })

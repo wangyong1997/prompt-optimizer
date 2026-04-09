@@ -58,7 +58,7 @@
               :options="actionMenuOptions"
               @select="handleActionMenuSelect"
             >
-              <NButton secondary>
+              <NButton secondary data-testid="favorites-manager-actions">
                 <template #icon>
                   <NIcon><DotsVertical /></NIcon>
                 </template>
@@ -144,7 +144,19 @@
       mode="readonly"
       :enabled-actions="['copy', 'diff']"
       @copy="handlePreviewCopy"
-    />
+    >
+      <template #extra-content>
+        <FavoriteMediaPreviewPanel
+          v-if="previewFavorite"
+          :favorite="previewFavorite"
+        />
+        <FavoritePreviewExtensionHost
+          v-if="previewFavorite"
+          :favorite="previewFavorite"
+          @favorite-updated="handleFavoritePreviewUpdated"
+        />
+      </template>
+    </OutputDisplayFullscreen>
 
     <!-- 收藏导入 -->
     <n-modal
@@ -264,7 +276,6 @@ import {
   NGrid,
   NGridItem,
   type UploadFileInfo,
-  type UploadChangeParam
 } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 import { useToast } from '../composables/ui/useToast';
@@ -274,6 +285,8 @@ import ToastUI from './Toast.vue';
 const { t } = useI18n();
 import FavoriteCard from './FavoriteCard.vue';
 import OutputDisplayFullscreen from './OutputDisplayFullscreen.vue';
+import FavoriteMediaPreviewPanel from './FavoriteMediaPreviewPanel.vue';
+import FavoritePreviewExtensionHost from './FavoritePreviewExtensionHost.vue';
 import CategoryManager from './CategoryManager.vue';
 import CategoryTreeSelect from './CategoryTreeSelect.vue';
 import SaveFavoriteDialog from './SaveFavoriteDialog.vue';
@@ -336,7 +349,7 @@ const importState = reactive({
 });
 const editState = reactive({
   visible: false,
-  favorite: null as FavoritePrompt | null
+  favorite: undefined as FavoritePrompt | undefined
 });
 const createState = reactive({
   visible: false
@@ -355,7 +368,7 @@ const filteredFavorites = computed(() => {
   // 分类过滤（支持树状结构，选中父分类包含所有子分类）
   if (selectedCategory.value) {
     const categoryIds = getCategoryWithDescendants(selectedCategory.value);
-    result = result.filter(f => categoryIds.includes(f.category));
+    result = result.filter(f => !!f.category && categoryIds.includes(f.category));
   }
 
   // 标签过滤（需要包含所有选中的标签）
@@ -440,6 +453,11 @@ const previewOriginalContent = computed(() => {
   return previewFavorite.value.metadata?.originalContent ?? '';
 });
 
+const handleFavoritePreviewUpdated = async (favoriteId: string) => {
+  await loadFavorites();
+  previewFavorite.value = favorites.value.find((favorite) => favorite.id === favoriteId) || null;
+};
+
 // 网格布局配置：根据视口宽度自适应列数
 // 移动端 (< 768px): 1 列
 // 平板 (768-1023px): 2 列
@@ -473,30 +491,38 @@ const pageSize = computed(() => {
 
 const actionMenuOptions = computed(() => [
   {
-    label: t('favorites.manager.actions.manageTags'),
+    label: () =>
+      h('span', { 'data-testid': 'favorites-manager-action-manage-tags' }, t('favorites.manager.actions.manageTags')),
     key: 'manageTags',
-    icon: () => h(NIcon, null, { default: () => h(Tags) })
+    icon: () => h(NIcon, null, { default: () => h(Tags) }),
   },
   {
-    label: t('favorites.manager.actions.manageCategories'),
+    label: () =>
+      h(
+        'span',
+        { 'data-testid': 'favorites-manager-action-manage-categories' },
+        t('favorites.manager.actions.manageCategories'),
+      ),
     key: 'manageCategories',
-    icon: () => h(NIcon, null, { default: () => h(Folder) })
+    icon: () => h(NIcon, null, { default: () => h(Folder) }),
   },
   {
     type: 'divider'
   },
   {
-    label: t('favorites.manager.actions.export'),
+    label: () =>
+      h('span', { 'data-testid': 'favorites-manager-action-export' }, t('favorites.manager.actions.export')),
     key: 'export',
-    icon: () => h(NIcon, null, { default: () => h(Download) })
+    icon: () => h(NIcon, null, { default: () => h(Download) }),
   },
   {
     type: 'divider'
   },
   {
-    label: t('favorites.manager.actions.clear'),
+    label: () =>
+      h('span', { 'data-testid': 'favorites-manager-action-clear' }, t('favorites.manager.actions.clear')),
     key: 'clear',
-    icon: () => h(NIcon, null, { default: () => h(Trash) })
+    icon: () => h(NIcon, null, { default: () => h(Trash) }),
   }
 ]);
 
@@ -514,6 +540,12 @@ const openImportDialog = () => {
 const closeImportDialog = () => {
   importState.visible = false;
 };
+
+type UploadChangeParam = {
+  file: UploadFileInfo | null
+  fileList: UploadFileInfo[]
+  event?: Event
+}
 
 const handleImportFileChange = (options: UploadChangeParam) => {
   importState.fileList = options.fileList.slice(0, 1);
@@ -699,7 +731,8 @@ const loadCategories = async () => {
   }
 };
 
-const getCategoryById = (id: string): FavoriteCategory | undefined => {
+const getCategoryById = (id?: string): FavoriteCategory | undefined => {
+  if (!id) return undefined;
   return categories.value.find(c => c.id === id);
 };
 
@@ -894,7 +927,7 @@ watch(() => importState.visible, (visible) => {
 
 watch(() => editState.visible, (visible) => {
   if (!visible) {
-    editState.favorite = null;
+    editState.favorite = undefined;
   }
 });
 
@@ -932,6 +965,8 @@ defineExpose({
 </script>
 
 <style scoped>
+@reference "../styles/index.css";
+
 /* 固定工具栏 */
 .toolbar {
   @apply p-4 border-b border-gray-200 dark:border-gray-700;

@@ -7,6 +7,8 @@ import type {
   ImageModelConfig,
   ImageParameterDefinition
 } from '../types'
+import { ImageError } from '../errors'
+import { IMAGE_ERROR_CODES } from '../../../constants/error-codes'
 
 export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
   protected normalizeBaseUrl(base: string): string {
@@ -21,6 +23,7 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
       requiresApiKey: true,
       defaultBaseURL: 'https://api.openai.com/v1',
       supportsDynamicModels: false,
+      apiKeyUrl: 'https://platform.openai.com/api-keys',
       connectionSchema: {
         required: ['apiKey'],
         optional: ['baseURL'],
@@ -98,7 +101,7 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
       }
     }
 
-    throw new Error(`Unsupported test type: ${testType}`)
+    throw new ImageError(IMAGE_ERROR_CODES.UNSUPPORTED_TEST_TYPE, undefined, { testType })
   }
 
   protected getParameterDefinitions(_modelId: string): readonly ImageParameterDefinition[] {
@@ -181,7 +184,7 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
 
   private async generateImageEdit(request: ImageRequest, config: ImageModelConfig): Promise<ImageResult> {
     if (!request.inputImage) {
-      throw new Error('Input image is required for image editing')
+      throw new ImageError(IMAGE_ERROR_CODES.IMAGE2IMAGE_INPUT_IMAGE_REQUIRED)
     }
 
     // 创建FormData
@@ -225,12 +228,12 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
 
   private parseImageResponse(response: any, config: ImageModelConfig): ImageResult {
     if (!response.data || !Array.isArray(response.data)) {
-      throw new Error('Invalid response format from OpenAI API')
+      throw new ImageError(IMAGE_ERROR_CODES.INVALID_RESPONSE_FORMAT)
     }
 
     const images = response.data.map((item: any) => {
       if (!item.b64_json) {
-        throw new Error('No base64 image data received from OpenAI API')
+        throw new ImageError(IMAGE_ERROR_CODES.INVALID_RESPONSE_FORMAT)
       }
 
       // 构建 data URL
@@ -250,8 +253,7 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
         providerId: 'openai',
         modelId: config.modelId,
         configId: config.id,
-        usage: response.usage,
-        created: response.created
+        usage: response.usage
       }
     }
   }
@@ -260,19 +262,22 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
     // 移除data URL前缀（如果存在）
     const cleanBase64 = base64.includes(',') ? base64.split(',')[1] : base64
     // 兼容浏览器与 Node/Electron：优先使用 atob；否则使用 Node 的 Buffer
-    let bytes: Uint8Array
     if (typeof atob === 'function') {
       const bin = atob(cleanBase64)
       const arr = new Uint8Array(bin.length)
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
-      bytes = arr
+      return new Blob([arr], { type: mimeType })
     } else if (typeof (globalThis as any).Buffer !== 'undefined') {
       const buf = (globalThis as any).Buffer.from(cleanBase64, 'base64')
-      bytes = new Uint8Array(buf)
+      // 创建新的 Uint8Array 并复制数据，确保使用普通 ArrayBuffer
+      const arr = new Uint8Array(buf.length)
+      for (let i = 0; i < buf.length; i++) {
+        arr[i] = buf[i]
+      }
+      return new Blob([arr], { type: mimeType })
     } else {
-      throw new Error('Base64 decoding is not supported in this environment')
+      throw new ImageError(IMAGE_ERROR_CODES.BASE64_DECODING_NOT_SUPPORTED)
     }
-    return new Blob([bytes], { type: mimeType })
   }
 
   private async apiCall(config: ImageModelConfig, endpoint: string, options: any) {
@@ -290,7 +295,7 @@ export class OpenAIImageAdapter extends AbstractImageProviderAdapter {
       } catch {
         // 忽略JSON解析错误，使用默认错误消息
       }
-      throw new Error(errorMessage)
+      throw new ImageError(IMAGE_ERROR_CODES.GENERATION_FAILED, errorMessage)
     }
 
     return await response.json()

@@ -19,6 +19,9 @@ export interface TestInputSectionProps {
   enableFullscreen?: boolean
   minRows?: number
   maxRows?: number
+
+  /** E2E: stable selector for the textarea input */
+  testId?: string
 }
 
 export interface TestInputSectionEmits {
@@ -38,6 +41,12 @@ export interface TestControlBarProps {
   primaryActionText: string
   primaryActionDisabled?: boolean
   primaryActionLoading?: boolean
+
+  /** E2E: stable selector for compare toggle */
+  compareToggleTestId?: string
+
+  /** E2E: stable selector for primary action button */
+  primaryActionTestId?: string
   
   // 布局配置
   layout?: 'default' | 'compact' | 'minimal'
@@ -58,11 +67,11 @@ export interface TestResultSectionProps {
   // 布局模式
   isCompareMode?: boolean
   verticalLayout?: boolean
-  showOriginal?: boolean
+  showPrimary?: boolean
   
   // 标题配置
-  originalTitle?: string
-  optimizedTitle?: string
+  primaryTitle?: string
+  secondaryTitle?: string
   singleResultTitle?: string
   
   // 尺寸配置
@@ -86,6 +95,9 @@ export interface TestAreaPanelProps {
   // 功能开关
   enableCompareMode?: boolean
   enableFullscreen?: boolean
+
+  /** E2E: stable selector prefix, e.g. "basic-system" */
+  testIdPrefix?: string
   
   // 布局配置
   inputMode?: 'compact' | 'normal'
@@ -94,10 +106,10 @@ export interface TestAreaPanelProps {
   conversationMaxHeight?: string
   
   // 结果显示配置
-  showOriginalResult?: boolean
+  showPrimaryResult?: boolean
   resultVerticalLayout?: boolean
-  originalResultTitle?: string
-  optimizedResultTitle?: string
+  primaryResultTitle?: string
+  secondaryResultTitle?: string
   singleResultTitle?: string
 }
 
@@ -179,7 +191,7 @@ export interface TestResultConfig {
   compareMode: {
     enabled: boolean
     layout: 'horizontal' | 'vertical'
-    showOriginal: boolean
+    showPrimary: boolean
   }
   singleMode: {
     title: string
@@ -193,16 +205,14 @@ export interface TestResultConfig {
   }
 }
 
-// TestAreaPanel 暴露的工具调用状态
-export interface TestAreaToolCallState {
-  original: ToolCallResult[]
-  optimized: ToolCallResult[]
-}
+// TestAreaPanel 暴露的工具调用状态（按 variantId 分桶）
+export type TestAreaToolCallState = Record<string, ToolCallResult[]>
 
 // 组件实例类型
+// TestAreaPanelInstance 同时兼容 TestAreaPanel 和 ConversationTestPanel
 export interface TestAreaPanelInstance {
-  clearToolCalls: (testType?: 'original' | 'optimized' | 'both') => void
-  handleToolCall: (toolCall: ToolCallResult, testType: 'original' | 'optimized') => void
+  clearToolCalls: (variantId?: string) => void
+  handleToolCall: (toolCall: ToolCallResult, variantId?: string) => void
   getToolCalls: () => TestAreaToolCallState
   getVariableValues: () => Record<string, string>
   setVariableValues: (values: Record<string, string>) => void
@@ -216,8 +226,8 @@ export interface TestAreaSlots {
   'secondary-controls'?: Slot
   'custom-actions'?: Slot
   'conversation-manager'?: Slot
-  'original-result'?: Slot
-  'optimized-result'?: Slot
+  'primary-result'?: Slot
+  'secondary-result'?: Slot
   'single-result'?: Slot
 }
 

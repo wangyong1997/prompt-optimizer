@@ -1,15 +1,51 @@
 import OpenAI from 'openai'
 import { AbstractTextProviderAdapter } from './abstract-adapter'
+import { APIError } from '../errors'
 import type {
   TextProvider,
   TextModel,
   TextModelConfig,
   Message,
+  ImageUnderstandingRequest,
   LLMResponse,
   StreamHandlers,
   ToolDefinition,
   ParameterDefinition
 } from '../types'
+
+interface ModelOverride {
+  id: string
+  name: string
+  description: string
+  capabilities?: Partial<TextModel['capabilities']>
+  defaultParameterValues?: Record<string, unknown>
+}
+
+/**
+ * OpenAI 静态模型定义
+ */
+const OPENAI_STATIC_MODELS: ModelOverride[] = [
+  {
+    id: 'gpt-5-mini',
+    name: 'GPT-5 Mini',
+    description: 'Fast, capable, and efficient small model with significant improvements in instruction-following and coding',
+    capabilities: {
+      supportsTools: true,
+      supportsReasoning: false,
+      maxContextLength: 1047576
+    }
+  },
+  {
+    id: 'gpt-5.1',
+    name: 'GPT-5.1',
+    description: 'Latest GPT-5.1 flagship model with enhanced capabilities',
+    capabilities: {
+      supportsTools: true,
+      supportsReasoning: false,
+      maxContextLength: 1047576
+    }
+  }
+]
 
 /**
  * OpenAI SDK适配器实现
@@ -36,6 +72,7 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
       requiresApiKey: true,
       defaultBaseURL: 'https://api.openai.com/v1',
       supportsDynamicModels: true,
+      apiKeyUrl: 'https://platform.openai.com/api-keys',
       connectionSchema: {
         required: ['apiKey'],
         optional: ['baseURL'],
@@ -51,24 +88,25 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
    * 获取静态模型列表（OpenAI官方模型）
    */
   public getModels(): TextModel[] {
-    const providerId = 'openai'
+    return OPENAI_STATIC_MODELS.map((definition) => {
+      const baseModel = this.buildDefaultModel(definition.id)
 
-    return [
-      // GPT-5 系列
-      {
-        id: 'gpt-5-2025-08-07',
-        name: 'GPT-5',
-        description: 'Latest GPT-5 model',
-        providerId,
+      return {
+        ...baseModel,
+        name: definition.name,
+        description: definition.description,
         capabilities: {
-          supportsTools: true,
-          supportsReasoning: false,
-          maxContextLength: 128000
+          ...baseModel.capabilities,
+          ...(definition.capabilities ?? {})
         },
-        parameterDefinitions: this.getParameterDefinitions('gpt-5-2025-08-07'),
-        defaultParameterValues: this.getDefaultParameterValues('gpt-5-2025-08-07')
+        defaultParameterValues: definition.defaultParameterValues
+          ? {
+              ...(baseModel.defaultParameterValues ?? {}),
+              ...definition.defaultParameterValues
+            }
+          : baseModel.defaultParameterValues
       }
-    ]
+    })
   }
 
   /**
@@ -84,7 +122,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
 
     try {
       const response = await openai.models.list()
-      console.log('[OpenAIAdapter] API returned models:', response)
 
       // 检查返回格式
       if (response && response.data && Array.isArray(response.data)) {
@@ -96,13 +133,13 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
           .sort((a, b) => a.id.localeCompare(b.id))
 
         if (models.length === 0) {
-          throw new Error('EMPTY_MODEL_LIST: API returned empty model list')
+          throw new APIError('API returned empty model list')
         }
 
         return models
       }
 
-      throw new Error('INVALID_RESPONSE: Unexpected API response format')
+      throw new APIError('Unexpected API response format')
     } catch (error: any) {
       console.error('[OpenAIAdapter] Failed to fetch models:', error)
 
@@ -112,19 +149,19 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
         const isCrossOriginError = this.detectCrossOriginError(error, baseURL)
 
         if (isCrossOriginError) {
-          throw new Error(`CROSS_ORIGIN_CONNECTION_FAILED: ${error.message}`)
+          throw new APIError(`Cross-origin connection failed: ${error.message}`)
         } else {
-          throw new Error(`CONNECTION_FAILED: ${error.message}`)
+          throw new APIError(`Connection failed: ${error.message}`)
         }
       }
 
       // API返回的错误信息
       if (error.response?.data) {
-        throw new Error(`API_ERROR: ${JSON.stringify(error.response.data)}`)
+        throw new APIError(`API error: ${JSON.stringify(error.response.data)}`)
       }
 
       // 其他错误,保持原始信息
-      throw new Error(`UNKNOWN_ERROR: ${error.message || 'Unknown error'}`)
+      throw new APIError(error.message || 'Unknown error')
     }
   }
 
@@ -335,6 +372,66 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
     }
   }
 
+  /**
+   * 浏览器环境下，跨域请求强制使用 credentials='omit'
+   * 避免部分兼容端点在 "Access-Control-Allow-Origin: *" 时被浏览器拦截。
+   */
+  private shouldForceCrossOriginCredentialOmit(input: RequestInfo | URL): boolean {
+    if (typeof window === 'undefined') {
+      return false
+    }
+
+    try {
+      const requestURL = this.resolveRequestURL(input, window.location.href)
+      return requestURL.origin !== window.location.origin
+    } catch (error) {
+      console.warn('[OpenAIAdapter] Failed to resolve request URL for credentials mode:', error)
+      return false
+    }
+  }
+
+  private resolveRequestURL(input: RequestInfo | URL, baseHref: string): URL {
+    if (typeof input === 'string') {
+      return new URL(input, baseHref)
+    }
+
+    if (input instanceof URL) {
+      return new URL(input.toString(), baseHref)
+    }
+
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      return new URL(input.url, baseHref)
+    }
+
+    return new URL(String(input), baseHref)
+  }
+
+  private sanitizeCrossOriginHeaders(headers?: HeadersInit): Headers | undefined {
+    if (!headers) {
+      return undefined
+    }
+
+    const source = new Headers(headers)
+    const sanitized = new Headers()
+
+    source.forEach((value, key) => {
+      const normalizedKey = key.toLowerCase()
+
+      // 精简 SDK 注入的诊断头，降低第三方网关 CORS 预检失败概率。
+      if (
+        normalizedKey.startsWith('x-stainless-') ||
+        normalizedKey === 'user-agent' ||
+        normalizedKey === 'content-length'
+      ) {
+        return
+      }
+
+      sanitized.set(key, value)
+    })
+
+    return sanitized
+  }
+
   // ===== SDK实例创建（从service.ts迁移） =====
 
   /**
@@ -345,7 +442,9 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
    * @param isStream 是否为流式请求
    * @returns OpenAI SDK实例
    */
-  private createOpenAIInstance(config: TextModelConfig, isStream: boolean = false): OpenAI {
+  // NOTE: protected so OpenAI-compatible providers (e.g. Ollama) can tweak auth/baseURL
+  // without re-implementing the whole chat/stream/tool plumbing.
+  protected createOpenAIInstance(config: TextModelConfig, isStream: boolean = false): OpenAI {
     const apiKey = config.connectionConfig.apiKey || ''
 
     // 处理baseURL，如果以'/chat/completions'结尾则去掉
@@ -371,6 +470,27 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
     // 浏览器环境检测
     if (typeof window !== 'undefined') {
       sdkConfig.dangerouslyAllowBrowser = true
+
+      const runtimeFetch =
+        typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : undefined
+
+      if (runtimeFetch) {
+        sdkConfig.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+          if (!this.shouldForceCrossOriginCredentialOmit(input)) {
+            return runtimeFetch(input, init)
+          }
+
+          const sanitizedHeaders = this.sanitizeCrossOriginHeaders(init?.headers)
+
+          return runtimeFetch(input, {
+            ...(init ?? {}),
+            ...(sanitizedHeaders ? { headers: sanitizedHeaders } : {}),
+            mode: init?.mode ?? 'cors',
+            credentials: 'omit'
+          })
+        }
+      }
+
       console.log('[OpenAIAdapter] Browser environment detected. Setting dangerouslyAllowBrowser=true.')
     }
 
@@ -414,41 +534,364 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
     }
 
     try {
-      const response = await openai.chat.completions.create(completionConfig)
-
-      // 处理响应中的 reasoning_content 和普通 content
-      const choice = response.choices[0]
-      if (!choice?.message) {
-        throw new Error('未收到有效的响应')
-      }
-
-      let content = choice.message.content || ''
-      let reasoning = ''
-
-      // 处理推理内容（如果存在）
-      // SiliconFlow 等提供商在 choice.message 中并列提供 reasoning_content 字段
-      if ((choice.message as any).reasoning_content) {
-        reasoning = (choice.message as any).reasoning_content
-      } else {
-        // 检测并分离content中的think标签
-        const processed = this.processThinkTags(content)
-        content = processed.content
-        reasoning = processed.reasoning || ''
-      }
-
-      const result: LLMResponse = {
-        content: content,
-        reasoning: reasoning || undefined,
-        metadata: {
-          model: config.modelMeta.id,
-          finishReason: choice.finish_reason || undefined
-        }
-      }
-
-      return result
+      const response: any = await openai.chat.completions.create(completionConfig)
+      return await this.parseCompletionResponse(response, config.modelMeta.id)
     } catch (error) {
       console.error('[OpenAIAdapter] API call failed:', error)
       throw error // 保留原始错误堆栈，不包装
+    }
+  }
+
+  protected async doSendImageUnderstanding(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig
+  ): Promise<LLMResponse> {
+    const openai = this.createOpenAIInstance(config, false)
+    const mergedParams = {
+      ...(config.paramOverrides || {}),
+      ...(request.paramOverrides || {})
+    } as Record<string, unknown>
+
+    const {
+      timeout,
+      model: _paramModel,
+      messages: _paramMessages,
+      stream: _paramStream,
+      responseMimeType: _responseMimeType,
+      ...restParams
+    } = mergedParams as any
+
+    const content = [
+      {
+        type: 'text',
+        text: request.userPrompt
+      },
+      ...request.images.map((image) => ({
+        type: 'image_url',
+        image_url: {
+          url: `data:${image.mimeType || 'image/png'};base64,${image.b64}`
+        }
+      }))
+    ]
+
+    const messages: any[] = []
+    if (request.systemPrompt?.trim()) {
+      messages.push({
+        role: 'system',
+        content: request.systemPrompt
+      })
+    }
+
+    messages.push({
+      role: 'user',
+      content
+    })
+
+    const completionConfig: any = {
+      model: config.modelMeta.id,
+      messages,
+      ...restParams
+    }
+
+    try {
+      const response: any = await openai.chat.completions.create(completionConfig)
+      return await this.parseCompletionResponse(response, config.modelMeta.id)
+    } catch (error) {
+      console.error('[OpenAIAdapter] Image understanding request failed:', error)
+      throw error
+    }
+  }
+
+  protected async doSendImageUnderstandingStream(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig,
+    callbacks: StreamHandlers
+  ): Promise<void> {
+    try {
+      const openai = this.createOpenAIInstance(config, true)
+      const mergedParams = {
+        ...(config.paramOverrides || {}),
+        ...(request.paramOverrides || {})
+      } as Record<string, unknown>
+
+      const {
+        timeout,
+        model: _paramModel,
+        messages: _paramMessages,
+        stream: _paramStream,
+        responseMimeType: _responseMimeType,
+        ...restParams
+      } = mergedParams as any
+
+      const content = [
+        {
+          type: 'text',
+          text: request.userPrompt
+        },
+        ...request.images.map((image) => ({
+          type: 'image_url',
+          image_url: {
+            url: `data:${image.mimeType || 'image/png'};base64,${image.b64}`
+          }
+        }))
+      ]
+
+      const messages: any[] = []
+      if (request.systemPrompt?.trim()) {
+        messages.push({
+          role: 'system',
+          content: request.systemPrompt
+        })
+      }
+
+      messages.push({
+        role: 'user',
+        content
+      })
+
+      const completionConfig: any = {
+        model: config.modelMeta.id,
+        messages,
+        stream: true,
+        ...restParams
+      }
+
+      const stream = await openai.chat.completions.create(completionConfig)
+
+      let accumulatedReasoning = ''
+      let accumulatedContent = ''
+      const thinkState = { isInThinkMode: false, buffer: '' }
+
+      for await (const chunk of stream as any) {
+        const reasoningContent = chunk.choices?.[0]?.delta?.reasoning_content || ''
+        if (reasoningContent) {
+          accumulatedReasoning += reasoningContent
+          callbacks.onReasoningToken?.(reasoningContent)
+        }
+
+        const textContent = chunk.choices?.[0]?.delta?.content || ''
+        if (textContent) {
+          accumulatedContent += textContent
+          this.processStreamContentWithThinkTags(textContent, callbacks, thinkState)
+        }
+      }
+
+      callbacks.onComplete({
+        content: accumulatedContent,
+        reasoning: accumulatedReasoning || undefined,
+        metadata: {
+          model: config.modelMeta.id
+        }
+      })
+    } catch (error) {
+      console.error('[OpenAIAdapter] Image understanding stream failed:', error)
+      callbacks.onError(error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  protected async parseCompletionResponse(response: any, modelId: string): Promise<LLMResponse> {
+    // 处理原始 SSE 字符串响应（某些 API 返回未解析的 SSE 格式）
+    if (typeof response === 'string') {
+      return this.parseSSEResponse(response, modelId)
+    }
+
+    // 检测是否为流式响应（某些 API 强制返回流式响应）
+    if (this.isStreamResponse(response)) {
+      return await this.consumeStreamResponse(response as AsyncIterable<any>, modelId)
+    }
+
+    // 处理响应中的 reasoning_content 和普通 content
+    if (!response.choices || response.choices.length === 0) {
+      throw new APIError('API returned invalid response: choices is empty or missing')
+    }
+
+    const choice = response.choices[0]
+    if (!choice?.message) {
+      throw new APIError('No valid response received')
+    }
+
+    let content = choice.message.content || ''
+    let reasoning = ''
+
+    // 处理推理内容（如果存在）
+    // SiliconFlow 等提供商在 choice.message 中并列提供 reasoning_content 字段
+    if ((choice.message as any).reasoning_content) {
+      reasoning = (choice.message as any).reasoning_content
+    } else {
+      // 检测并分离content中的think标签
+      const processed = this.processThinkTags(content)
+      content = processed.content
+      reasoning = processed.reasoning || ''
+    }
+
+    return {
+      content: content,
+      reasoning: reasoning || undefined,
+      metadata: {
+        model: modelId,
+        finishReason: choice.finish_reason || undefined
+      }
+    }
+  }
+
+  /**
+   * 解析原始 SSE 字符串响应
+   * 某些 OpenAI 兼容 API 会返回未解析的 SSE 格式字符串
+   */
+  private parseSSEResponse(sseString: string, modelId: string): LLMResponse {
+    let accumulatedContent = ''
+    let accumulatedReasoning = ''
+    let finishReason: string | undefined
+
+    // 按行分割 SSE 数据
+    const lines = sseString.split('\n')
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+
+      // 跳过空行
+      if (!trimmed) {
+        continue
+      }
+
+      // 跳过 [DONE] 标记（兼容 data: [DONE] 和 data:[DONE]）
+      if (trimmed === 'data: [DONE]' || trimmed === 'data:[DONE]') {
+        continue
+      }
+
+      // 解析 data: 前缀的行（兼容有无空格：data: 或 data:）
+      if (trimmed.startsWith('data:')) {
+        const jsonStr = trimmed.slice(5).trimStart() // 移除 'data:' 前缀和可能的前导空格
+        if (!jsonStr) {
+          continue
+        }
+        try {
+          const chunk = JSON.parse(jsonStr)
+
+          // 处理推理内容
+          const reasoningContent = chunk.choices?.[0]?.delta?.reasoning_content || ''
+          if (reasoningContent) {
+            accumulatedReasoning += reasoningContent
+          }
+
+          // 处理主要内容
+          const content = chunk.choices?.[0]?.delta?.content || ''
+          if (content) {
+            accumulatedContent += content
+          }
+
+          // 记录完成原因
+          if (chunk.choices?.[0]?.finish_reason && chunk.choices[0].finish_reason !== '') {
+            finishReason = chunk.choices[0].finish_reason
+          }
+        } catch (e) {
+          // 忽略无法解析的 chunk
+        }
+      }
+    }
+
+    // 兜底：如果 SSE 解析未得到任何内容，尝试直接解析为 JSON
+    if (!accumulatedContent && !accumulatedReasoning) {
+      try {
+        const fallbackJson = JSON.parse(sseString)
+        // 尝试提取标准 OpenAI 响应格式
+        const fallbackContent = fallbackJson.choices?.[0]?.message?.content || ''
+        const fallbackReasoning = fallbackJson.choices?.[0]?.message?.reasoning_content || ''
+        if (fallbackContent || fallbackReasoning) {
+          const processed = this.processThinkTags(fallbackContent)
+          return {
+            content: processed.content,
+            reasoning: fallbackReasoning || processed.reasoning || undefined,
+            metadata: {
+              model: modelId,
+              finishReason: fallbackJson.choices?.[0]?.finish_reason
+            }
+          }
+        }
+      } catch {
+        // JSON 解析失败，继续抛出错误
+      }
+      // SSE 和 JSON 解析都失败，抛出明确错误
+      throw new APIError(
+        `SSE response parsing failed: unable to extract any content from response. First 200 chars: ${sseString.slice(0, 200)}`
+      )
+    }
+
+    // 处理 think 标签
+    const processed = this.processThinkTags(accumulatedContent)
+
+    return {
+      content: processed.content,
+      reasoning: accumulatedReasoning || processed.reasoning || undefined,
+      metadata: {
+        model: modelId,
+        finishReason
+      }
+    }
+  }
+
+  /**
+   * 检测响应是否为流式响应
+   * 某些 OpenAI 兼容 API会强制返回流式响应
+   */
+  private isStreamResponse(response: any): boolean {
+    // 首先检查是否为标准的非流式响应格式
+    // 如果响应包含 choices 数组且第一个 choice 有 message 属性，则是非流式响应
+    if (response && response.choices && Array.isArray(response.choices) && response.choices.length > 0) {
+      const firstChoice = response.choices[0]
+      // 非流式响应有 message 属性，流式响应有 delta 属性
+      if (firstChoice && firstChoice.message !== undefined) {
+        return false
+      }
+    }
+
+    // 检测是否为异步迭代器（流式响应的特征）
+    if (response && typeof response[Symbol.asyncIterator] === 'function') {
+      return true
+    }
+
+    return false
+  }
+
+  /**
+   * 消费流式响应并聚合为完整响应
+   * 用于处理强制返回流式响应的 API
+   */
+  private async consumeStreamResponse(stream: AsyncIterable<any>, modelId: string): Promise<LLMResponse> {
+    let accumulatedContent = ''
+    let accumulatedReasoning = ''
+    let finishReason: string | undefined
+
+    for await (const chunk of stream) {
+      // 处理推理内容
+      const reasoningContent = chunk.choices?.[0]?.delta?.reasoning_content || ''
+      if (reasoningContent) {
+        accumulatedReasoning += reasoningContent
+      }
+
+      // 处理主要内容
+      const content = chunk.choices?.[0]?.delta?.content || ''
+      if (content) {
+        accumulatedContent += content
+      }
+
+      // 记录完成原因
+      if (chunk.choices?.[0]?.finish_reason) {
+        finishReason = chunk.choices[0].finish_reason
+      }
+    }
+
+    // 处理 think 标签
+    const processed = this.processThinkTags(accumulatedContent)
+
+    return {
+      content: processed.content,
+      reasoning: accumulatedReasoning || processed.reasoning || undefined,
+      metadata: {
+        model: modelId,
+        finishReason
+      }
     }
   }
 
@@ -475,7 +918,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
         content: msg.content
       }))
 
-      console.log('[OpenAIAdapter] Creating stream request...')
       const {
         timeout, // 已在createOpenAIInstance中处理
         model: _paramModel, // 避免覆盖主model
@@ -493,8 +935,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
 
       // 直接使用流式响应
       const stream = await openai.chat.completions.create(completionConfig)
-
-      console.log('[OpenAIAdapter] Stream response received')
 
       // 累积内容
       let accumulatedReasoning = ''
@@ -524,8 +964,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
           this.processStreamContentWithThinkTags(content, callbacks, thinkState)
         }
       }
-
-      console.log('[OpenAIAdapter] Stream completed')
 
       // 构建完整响应
       const response: LLMResponse = {
@@ -569,7 +1007,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
         content: msg.content
       }))
 
-      console.log('[OpenAIAdapter] Creating stream request with tools...')
       const {
         timeout,
         model: _paramModel,
@@ -589,7 +1026,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
       }
 
       const stream = await openai.chat.completions.create(completionConfig)
-      console.log('[OpenAIAdapter] Stream response with tools received')
 
       let accumulatedReasoning = ''
       let accumulatedContent = ''
@@ -658,8 +1094,6 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
         }
       }
 
-      console.log('[OpenAIAdapter] Stream with tools completed, tool calls:', toolCalls.length)
-
       const response: LLMResponse = {
         content: accumulatedContent,
         reasoning: accumulatedReasoning || undefined,
@@ -675,4 +1109,3 @@ export class OpenAIAdapter extends AbstractTextProviderAdapter {
     }
   }
 }
-

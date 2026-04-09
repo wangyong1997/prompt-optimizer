@@ -1,37 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import ContextEditor from '../../../src/components/context-mode/ContextEditor.vue'
-
-// Mock quickTemplateManager using factory function 
-vi.mock('../../../src/data/quickTemplates', () => {
-  const mockQuickTemplates = [
-    {
-      id: 'template1',
-      name: 'System Chat Template',
-      description: 'Basic system chat template',
-      messages: [
-        { role: 'system', content: '{{currentPrompt}}' },
-        { role: 'user', content: '{{userQuestion}}' }
-      ]
-    },
-    {
-      id: 'template2', 
-      name: 'User Prompt Template',
-      description: 'Basic user prompt template',
-      messages: [
-        { role: 'user', content: '{{currentPrompt}}' }
-      ]
-    }
-  ]
-
-  return {
-    quickTemplateManager: {
-      getTemplates: vi.fn(() => mockQuickTemplates)
-    },
-    mockQuickTemplates
-  }
-})
 
 // Mock Naive UI 组件
 vi.mock('naive-ui', () => ({
@@ -145,9 +115,9 @@ vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     t: (key: string, params?: any) => {
       const translations = {
-        'contextEditor.importPlaceholders.openai': 'OpenAI API 请求格式，例如：\n{\n  "messages": [...],\n  "model": "gpt-4"\n}',
-        'contextEditor.importPlaceholders.langfuse': 'LangFuse 追踪数据，例如：\n{\n  "input": {\n    "messages": [...]\n  }\n}',
-        'contextEditor.importPlaceholders.conversation': '标准会话格式，例如：\n{\n  "messages": [\n    {"role": "system", "content": "..."},\n    {"role": "user", "content": "..."}\n  ]\n}',
+        'contextEditor.importPlaceholders.openai': 'OpenAI API 请求格式（示例如下）：',
+        'contextEditor.importPlaceholders.langfuse': 'LangFuse 追踪数据格式（示例如下）：',
+        'contextEditor.importPlaceholders.conversation': '标准会话 JSON 格式（示例如下）：',
         'contextEditor.importPlaceholders.smart': "粘贴任意支持格式的 JSON 数据，系统将自动识别"
       }
 
@@ -156,7 +126,7 @@ vi.mock('vue-i18n', () => ({
       }
       return translations[key] || key
     },
-    locale: { value: 'zh-CN' }
+    locale: ref('zh-CN')
   })
 }))
 
@@ -200,6 +170,21 @@ vi.mock('../../../src/composables/useAccessibility', () => ({
   })
 }))
 
+// Mock useTemporaryVariables (临时变量管理器)
+vi.mock('../../../src/composables/variable/useTemporaryVariables', () => ({
+  useTemporaryVariables: () => ({
+    temporaryVariables: { value: {} },
+    setVariable: vi.fn(),
+    getVariable: vi.fn(() => undefined),
+    deleteVariable: vi.fn(),
+    clearAll: vi.fn(),
+    hasVariable: vi.fn(() => false),
+    listVariables: vi.fn(() => ({})),
+    batchSet: vi.fn(),
+    batchDelete: vi.fn()
+  })
+}))
+
 // Mock useContextEditor
 const mockContextEditor = {
   currentData: { value: null },
@@ -218,27 +203,6 @@ vi.mock('../../../src/composables/useContextEditor', () => ({
 }))
 
 describe('ContextEditor 综合测试', () => {
-  // Get the mocked templates for testing
-  const mockQuickTemplates = [
-    {
-      id: 'template1',
-      name: 'System Chat Template',
-      description: 'Basic system chat template',
-      messages: [
-        { role: 'system', content: '{{currentPrompt}}' },
-        { role: 'user', content: '{{userQuestion}}' }
-      ]
-    },
-    {
-      id: 'template2', 
-      name: 'User Prompt Template',
-      description: 'Basic user prompt template',
-      messages: [
-        { role: 'user', content: '{{currentPrompt}}' }
-      ]
-    }
-  ]
-
   // Mock variableManager
   const createMockVariableManager = () => ({
     variableManager: { value: null },
@@ -371,76 +335,6 @@ describe('ContextEditor 综合测试', () => {
     })
   })
 
-  describe('模板管理功能', () => {
-    it('应该根据optimizationMode获取正确的模板', async () => {
-      // 测试系统模式
-      wrapper = await createWrapper({ optimizationMode: 'system' })
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-      
-      // 测试用户模式
-      wrapper = await createWrapper({ optimizationMode: 'user' })
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-    })
-
-    it('应用模板应该更新localState并发射事件', async () => {
-      wrapper = await createWrapper()
-      
-      const template = mockQuickTemplates[0]
-      await wrapper.vm.handleTemplateApply(template)
-      
-      expect(wrapper.vm.localState.messages).toEqual(template.messages)
-      expect(wrapper.emitted('update:state')).toBeTruthy()
-      expect(wrapper.emitted('contextChange')).toBeTruthy()
-    })
-
-    it('应用空模板应该不执行任何操作', async () => {
-      wrapper = await createWrapper()
-      
-      const emptyTemplate = { id: 'empty', name: 'Empty', messages: [] }
-      await wrapper.vm.handleTemplateApply(emptyTemplate)
-      
-      expect(wrapper.vm.localState.messages).toEqual([])
-      expect(wrapper.emitted('update:state')).toBeFalsy()
-    })
-
-    it('应该显示模板预览内容', async () => {
-      wrapper = await createWrapper()
-      
-      const template = mockQuickTemplates[0]
-      expect(template.messages.length).toBeGreaterThan(0)
-      expect(template.description).toBeDefined()
-    })
-
-    it('应该正确渲染模板标签页', async () => {
-      wrapper = await createWrapper()
-      wrapper.vm.activeTab = 'templates'
-      await nextTick()
-      
-      // 验证模板标签页存在
-      const tabPanes = wrapper.findAll('.n-tab-pane')
-      expect(tabPanes.length).toBeGreaterThanOrEqual(1)
-    })
-
-    it('应该显示模板统计信息', async () => {
-      wrapper = await createWrapper()
-      wrapper.vm.activeTab = 'templates'
-      await nextTick()
-      
-      const vm = wrapper.vm
-      expect(vm.quickTemplates.length).toBe(2)
-    })
-
-    it('应用模板后应该切换到消息编辑标签页', async () => {
-      wrapper = await createWrapper()
-      wrapper.vm.activeTab = 'templates'
-      
-      const template = mockQuickTemplates[0]
-      await wrapper.vm.handleTemplateApply(template)
-      
-      expect(wrapper.vm.activeTab).toBe('messages')
-    })
-  })
-
   describe('导入导出功能', () => {
     beforeEach(() => {
       // 重置 mock
@@ -455,7 +349,7 @@ describe('ContextEditor 综合测试', () => {
 
     it('点击导入按钮应该打开导入对话框', async () => {
       wrapper = await createWrapper()
-      
+
       await wrapper.vm.handleImport()
       expect(wrapper.vm.showImportDialog).toBe(true)
     })
@@ -467,156 +361,12 @@ describe('ContextEditor 综合测试', () => {
           messages: [{ role: 'user', content: 'test' }]
         }
       })
-      
+
       await wrapper.vm.handleExport()
       expect(wrapper.vm.showExportDialog).toBe(true)
     })
 
-
-    it('导入对话框应该显示正确的格式选项', async () => {
-      wrapper = await createWrapper()
-      wrapper.vm.showImportDialog = true
-      await nextTick()
-      
-      expect(wrapper.vm.importFormats).toHaveLength(4)
-      expect(wrapper.vm.importFormats.map(f => f.id)).toEqual(['smart', 'conversation', 'openai', 'langfuse'])
-    })
-
-    it('导出对话框应该显示正确的格式选项', async () => {
-      wrapper = await createWrapper()
-      wrapper.vm.showExportDialog = true
-      await nextTick()
-      
-      expect(wrapper.vm.exportFormats).toHaveLength(3)
-      expect(wrapper.vm.exportFormats.map(f => f.id)).toEqual(['standard', 'openai', 'template'])
-    })
-
-    it('应该正确处理不同导入格式的占位符', async () => {
-      wrapper = await createWrapper()
-      
-      wrapper.vm.selectedImportFormat = 'openai'
-      expect(wrapper.vm.getImportPlaceholder()).toContain('OpenAI API')
-      
-      wrapper.vm.selectedImportFormat = 'langfuse'
-      expect(wrapper.vm.getImportPlaceholder()).toContain('LangFuse')
-      
-      wrapper.vm.selectedImportFormat = 'conversation'
-      expect(wrapper.vm.getImportPlaceholder()).toContain('会话格式')
-      
-      wrapper.vm.selectedImportFormat = 'smart'
-      expect(wrapper.vm.getImportPlaceholder()).toContain('自动识别')
-    })
-
-    it('导入失败时应该显示错误信息', async () => {
-      mockContextEditor.smartImport.mockReturnValueOnce({ 
-        success: false, 
-        error: '导入数据格式错误' 
-      })
-      
-      wrapper = await createWrapper()
-      wrapper.vm.selectedImportFormat = 'smart'
-      wrapper.vm.importData = 'invalid json'
-      
-      await wrapper.vm.handleImportSubmit()
-      
-      expect(wrapper.vm.importError).toBeTruthy()
-    })
-
-    it('导出失败时应该处理错误', async () => {
-      mockContextEditor.exportToFile.mockReturnValueOnce(false)
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      
-      wrapper = await createWrapper({
-        state: {
-          ...defaultProps.state,
-          messages: [{ role: 'user', content: 'test' }]
-        }
-      })
-      
-      await wrapper.vm.handleExportToFile()
-      
-      expect(consoleSpy).toHaveBeenCalled()
-      consoleSpy.mockRestore()
-    })
-
-    it('导入成功后应该清空导入状态', async () => {
-      wrapper = await createWrapper()
-      wrapper.vm.selectedImportFormat = 'conversation'
-      wrapper.vm.importData = '{"messages":[{"role":"user","content":"test"}]}'
-      
-      await wrapper.vm.handleImportSubmit()
-      
-      expect(wrapper.vm.showImportDialog).toBe(false)
-      expect(wrapper.vm.importData).toBe('')
-      expect(wrapper.vm.importError).toBe('')
-    })
-  })
-
-  describe('optimizationMode 参数传递', () => {
-    it('应该正确传递 system 模式到模板管理器', async () => {
-      wrapper = await createWrapper({ optimizationMode: 'system' })
-      
-      // 直接检查组件的 quickTemplates 计算属性
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-    })
-
-    it('应该正确传递 user 模式到模板管理器', async () => {
-      wrapper = await createWrapper({ optimizationMode: 'user' })
-      
-      // 直接检查组件的 quickTemplates 计算属性
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-    })
-
-    it('optimizationMode 改变时应该重新获取模板', async () => {
-      wrapper = await createWrapper({ optimizationMode: 'system' })
-      
-      await wrapper.setProps({ optimizationMode: 'user' })
-      await nextTick()
-      
-      // 检查模板仍然可用
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-    })
-
-    it('应该根据 optimizationMode 显示正确的模板分类标签', async () => {
-      wrapper = await createWrapper({ optimizationMode: 'system' })
-      wrapper.vm.activeTab = 'templates'
-      await nextTick()
-      
-      const vm = wrapper.vm
-      expect(vm.optimizationMode).toBe('system')
-      
-      // 测试切换到用户模式
-      await wrapper.setProps({ optimizationMode: 'user' })
-      await nextTick()
-      
-      expect(vm.optimizationMode).toBe('user')
-    })
-
-    it('应该根据语言环境获取模板', async () => {
-      // Mock i18n locale
-      const mockLocale = { value: 'en-US' }
-      wrapper = await createWrapper({ optimizationMode: 'system' }, {
-        global: {
-          mocks: {
-            announcements: [],
-            $i18n: {
-              locale: mockLocale
-            }
-          }
-        }
-      })
-      
-      // 模板应该仍然可用
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-    })
-
-    it('应该处理无效的 optimizationMode 值', async () => {
-      // 传递无效值，应该仍然能正常工作
-      wrapper = await createWrapper({ optimizationMode: 'invalid' as any })
-      
-      // 模板仍然应该可用
-      expect(wrapper.vm.quickTemplates).toHaveLength(2)
-    })
+    // 注意：导入导出的详细功能测试已移至 ImportExportDialog.spec.ts
   })
 
   describe('消息编辑功能', () => {
@@ -696,34 +446,6 @@ describe('ContextEditor 综合测试', () => {
       expect(wrapper.emitted('cancel')).toBeTruthy()
       expect(wrapper.emitted('update:visible')).toBeTruthy()
       expect(wrapper.emitted('update:visible')[0]).toEqual([false])
-    })
-  })
-
-  describe('错误处理', () => {
-    it('导入失败时应该显示错误信息', async () => {
-      // 这个测试实际走的是JSON.parse失败的分支，测试输入无效JSON的错误处理
-      wrapper = await createWrapper()
-      wrapper.vm.selectedImportFormat = 'smart'
-      wrapper.vm.importData = 'invalid json'  // 无效JSON，触发JSON.parse失败
-      
-      await wrapper.vm.handleImportSubmit()
-      
-      // 根据组件代码第1262行：'数据格式错误，请检查JSON格式'
-      // 但实际错误信息来自JSON.parse的SyntaxError message
-      expect(wrapper.vm.importError).toContain('Unexpected token')
-    })
-
-    it('文件上传失败时应该设置错误状态', async () => {
-      mockContextEditor.importFromFile.mockResolvedValueOnce(false)
-      
-      wrapper = await createWrapper()
-      
-      const file = new File(['invalid content'], 'test.json', { type: 'application/json' })
-      const event = { target: { files: [file] } }
-      
-      await wrapper.vm.handleFileUpload(event)
-      
-      expect(wrapper.vm.importError).toBeTruthy()
     })
   })
 })

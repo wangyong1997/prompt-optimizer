@@ -7,11 +7,15 @@ import ImageModelManager from '../../../src/components/ImageModelManager.vue'
 vi.mock('@prompt-optimizer/core', () => ({}))
 
 // Mock i18n
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({
-    t: (key: string) => key
-  })
-}))
+vi.mock('vue-i18n', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-i18n')>()
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: (key: string) => key,
+    }),
+  }
+})
 
 // Mock the useImageModelManager composable
 const mockLoadConfigs = vi.fn().mockResolvedValue(undefined)
@@ -125,6 +129,6 @@ describe('ImageModelManager', () => {
     })
   }
 
-  describe('核心功能', () => {
-  })
+  // TODO: 添加测试用例
+  it.todo('应该正确初始化组件')
 })

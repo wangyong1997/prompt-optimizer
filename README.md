@@ -27,24 +27,24 @@ Prompt Optimizer是一个强大的AI提示词优化工具，帮助你编写更�
 ### 🎥 功能演示
 
 <div align="center">
-  <p><b>1. 角色扮演对话：激发小模型潜力</b></p>
-  <p>在追求成本效益的生产或注重隐私的本地化场景中，结构化的提示词能让小模型稳定地进入角色，提供沉浸式、高一致性的角色扮演体验，有效激发其潜力。</p>
-  <img src="images/demo/cat-maid-roleplay.png" alt="猫女仆角色扮演演示" width="85%">
+  <p><b>1. 红队审稿：让模型不再顺着说</b></p>
+  <p>同样的输入下，系统提示词优化能让小模型从泛泛而谈的附和式回答，转向更有立场、更有结构的批判式审查，明确指出论点中的漏洞、风险与隐含假设。</p>
+  <img src="images/demo/red-team-reviewer-fullpage.png" alt="红队审稿人整页演示" width="85%">
   <br>
-  <p><b>2. 知识图谱提取：保障生产环境的稳定性</b></p>
-  <p>在需要程序化处理的生产环境中，高质量的提示词能显著降低对模型智能程度的要求，使得更经济的小模型也能稳定输出可靠的指定格式。本工具旨在辅助开发者快速达到此目的，从而加速开发、保障稳定，实现降本增效。</p>
-  <img src="images/demo/knowledge-graph-extractor.png" alt="知识图谱提取演示" width="85%">
+  <p><b>2. 闲鱼砍价回复：让变量真正决定回复策略</b></p>
+  <p>同一套提示词模板里，只需替换商品、报价、底线和语气等变量，就能快速复用到不同交易场景。优化后的提示词会明显减少“助手腔”和多余解释，让小模型更像真人卖家一样，围绕价格分歧、商品情况和成交底线直接组织回复。</p>
+  <img src="images/demo/pro-variable-bargaining-reply.png" alt="闲鱼砍价回复变量模式演示" width="85%">
   <br>
-  <p><b>3. 诗歌写作：辅助创意探索与需求定制</b></p>
-  <p>当面对一个强大的AI，我们的目标不只是得到一个“好”答案，而是得到一个“我们想要的”独特答案。本工具能帮助用户将一个模糊的灵感（如“写首诗”）细化为具体的需求（关于什么主题、何种意象、何种情感），辅助您探索、发掘并精确表达自己的创意，与AI共创独一无二的作品。</p>
-  <img src="images/demo/poetry-writing.png" alt="诗歌创作演示" width="85%">
+  <p><b>3. 文生图：把一句想法优化成更可控的主视觉提示词</b></p>
+  <p>这不是单纯把提示词写得更长，而是把一句模糊念头拆成更清晰的视觉主体、空间关系和情绪锚点。左侧只有“夜空中的漂浮图书馆”这个概念，右侧则通过优化补足了更明确的奇幻结构和画面重心，让生成结果更像可继续定制的主视觉，而不是只靠模型自由发挥。</p>
+  <img src="images/demo/text2image-floating-library-creative.png" alt="漂浮图书馆文生图演示" width="85%">
 </div>
 
 ## ✨ 核心特性
 
 - 🎯 **智能优化**：一键优化提示词，支持多轮迭代改进，提升AI回复准确度
 - 📝 **双模式优化**：支持系统提示词优化和用户提示词优化，满足不同使用场景
-- 🔄 **对比测试**：支持原始提示词和优化后提示词的实时对比，直观展示优化效果
+- 🔄 **分析与对比评估**：支持分析、单结果评估和多结果对比评估，帮助判断提示词是否真的改进
 - 🤖 **多模型集成**：支持OpenAI、Gemini、DeepSeek、智谱AI、SiliconFlow等主流AI模型
 - 🖼️ **图像生成**：支持文生图（T2I）和图生图（I2I），集成Gemini、Seedream等图像模型
 - 📊 **高级测试模式**：上下文变量管理、多轮会话测试、工具调用（Function Calling）支持
@@ -66,7 +66,7 @@ Prompt Optimizer是一个强大的AI提示词优化工具，帮助你编写更�
 - 📊 **上下文变量管理**：自定义变量、批量替换、变量预览
 - 💬 **多轮会话测试**：模拟真实对话场景，测试提示词在多轮交互中的表现
 - 🛠️ **工具调用支持**：Function Calling集成，支持OpenAI和Gemini工具调用
-- 🎯 **灵活调试**：更强大的提示词测试和调试能力
+- 🔍 **分析与评估链路**：在文本模式下支持分析、评估、对比评估和基于评估的智能改写
 
 详细使用说明请查看 [图像模式文档](docs/image-mode.md)
 
@@ -193,7 +193,7 @@ MCP Server 需要配置 API 密钥才能正常工作。主要的 MCP 专属配�
 
 ```bash
 # MCP 服务器配置
-MCP_DEFAULT_MODEL_PROVIDER=openai  # 可选值：openai, gemini, deepseek, siliconflow, zhipu, custom
+MCP_DEFAULT_MODEL_PROVIDER=openai  # 可选值：openai, gemini, anthropic, deepseek, siliconflow, zhipu, dashscope, openrouter, modelscope, custom
 MCP_LOG_LEVEL=info                 # 日志级别
 ```
 
@@ -303,8 +303,7 @@ cd prompt-optimizer
 pnpm install
 
 # 3. 启动开发服务
-pnpm dev               # 主开发命令：构建core/ui并运行web应用
-pnpm dev:web          # 仅运行web应用
+pnpm dev              # 主开发命令：构建 core/ui 并运行 web 应用
 pnpm dev:fresh        # 完整重置并重新启动开发环境
 ```
 </details>
@@ -320,10 +319,10 @@ pnpm dev:fresh        # 完整重置并重新启动开发环境
 - [x] MCP服务发布
 - [x] 高级模式：变量管理、上下文测试、工具调用
 - [x] 图像生成：文生图（T2I）和图生图（I2I）支持
+- [x] 提示词收藏和模板管理
 - [ ] 支持工作区/项目管理
-- [ ] 支持提示词收藏和模板管理
 
-详细的项目状态可查看 [项目状态文档](docs/project-status.md)
+详细的项目状态可查看 [项目状态文档](docs/project/project-status.md)
 
 ## 📖 相关文档
 
@@ -387,6 +386,24 @@ pnpm dev:fresh        # 完整重置并重新启动开发环境
 2. **使用Docker部署（HTTP）**：通过 `http://localhost:8081` 访问，与本地Ollama都是HTTP
 3. **使用Chrome插件**：插件在某些情况下也可以绕过部分安全限制
 
+### macOS 桌面应用问题
+
+#### Q5: macOS 打开应用时提示「已损坏」或「无法验证开发者」怎么办？
+**A**: 这是因为应用未经过 Apple 签名认证。由于 Apple 开发者账号费用较高，目前桌面应用暂未进行签名。
+
+**解决方案**：
+在终端中执行以下命令移除安全隔离属性：
+
+```bash
+# 对于已安装的应用
+xattr -rd com.apple.quarantine /Applications/PromptOptimizer.app
+
+# 对于下载的 .dmg 文件（安装前执行）
+xattr -rd com.apple.quarantine ~/Downloads/PromptOptimizer-*.dmg
+```
+
+执行后重新打开应用即可正常使用。
+
 </details>
 
 
@@ -419,6 +436,10 @@ pnpm dev:fresh        # 完整重置并重新启动开发环境
 <a href="https://github.com/linshenkx/prompt-optimizer/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=linshenkx/prompt-optimizer" alt="贡献者" />
 </a>
+
+## 🙏 鸣谢
+
+本项目在提示词工程与结构化提示词设计的探索中，受到了 [LangGPT](https://github.com/langgptai/LangGPT) 的启发。感谢 LangGPT 项目及其社区的开源分享与持续探索。
 
 ## 📄 开源协议
 

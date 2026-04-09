@@ -7,7 +7,15 @@ import { IStorageProvider } from '../storage/types'
 import { StorageAdapter } from '../storage/adapter'
 import { CORE_SERVICE_KEYS } from '../../constants/storage-keys'
 import { ImportExportError } from '../../interfaces/import-export'
-import { getDefaultImageModels } from './defaults'
+import { IMAGE_ERROR_CODES, IMPORT_EXPORT_ERROR_CODES, type ErrorParams } from '../../constants/error-codes'
+import { BaseError } from '../llm/errors'
+import { getDefaultImageModels, getBuiltinImageConfigIds } from './defaults'
+
+class ImageModelManagerError extends BaseError {
+  constructor(code: string, message?: string, params?: ErrorParams) {
+    super(code, message, params)
+  }
+}
 
 /**
  * 图像模型管理器：专注于配置管理，遵循新的三层架构
@@ -65,11 +73,46 @@ export class ImageModelManager implements IImageModelManager {
         }
       }
       const defaults = getDefaultImageModels(this.registry)
-      // 合并默认项
+      // 合并默认项，并检查是否需要自动启用内置模型
       for (const [key, cfg] of Object.entries(defaults)) {
         if (!data[key]) {
+          // 添加缺失的默认模型
           data[key] = cfg
           changed = true
+        } else {
+          const existingConfig = data[key]
+          const backfillableFields = this.getBackfillableBuiltinConnectionFields(
+            key,
+            existingConfig,
+            cfg
+          )
+          const shouldAutoEnable = this.shouldAutoEnableBuiltinModel(
+            key,
+            existingConfig,
+            cfg,
+            backfillableFields
+          )
+
+          if (backfillableFields.length > 0 || shouldAutoEnable) {
+            const nextConnectionConfig = {
+              ...(existingConfig.connectionConfig || {})
+            }
+            for (const field of backfillableFields) {
+              nextConnectionConfig[field] = cfg.connectionConfig?.[field]
+            }
+
+            data[key] = {
+              ...existingConfig,
+              connectionConfig: nextConnectionConfig,
+              enabled: shouldAutoEnable ? true : existingConfig.enabled
+            }
+            changed = true
+            if (shouldAutoEnable) {
+              console.log(`[ImageModelManager] Auto-enabled builtin model with new connection fields: ${key}`)
+            } else {
+              console.log(`[ImageModelManager] Backfilled missing connection fields for builtin model: ${key}`)
+            }
+          }
         }
       }
 
@@ -103,7 +146,11 @@ export class ImageModelManager implements IImageModelManager {
       (current) => {
         const data = current || {}
         if (data[toStore.id]) {
-          throw new Error(`Configuration with id '${toStore.id}' already exists`)
+          throw new ImageModelManagerError(
+            IMAGE_ERROR_CODES.CONFIG_ALREADY_EXISTS,
+            undefined,
+            { configId: toStore.id },
+          )
         }
         return { ...data, [toStore.id]: toStore }
       }
@@ -116,7 +163,11 @@ export class ImageModelManager implements IImageModelManager {
       (current) => {
         const data = current || {}
         if (!data[id]) {
-          throw new Error(`Configuration with id '${id}' does not exist`)
+          throw new ImageModelManagerError(
+            IMAGE_ERROR_CODES.CONFIG_DOES_NOT_EXIST,
+            undefined,
+            { configId: id },
+          )
         }
 
         const updated: ImageModelConfig = {
@@ -231,7 +282,8 @@ export class ImageModelManager implements IImageModelManager {
       throw new ImportExportError(
         'Failed to export image model configurations',
         await this.getDataType(),
-        error as Error
+        error as Error,
+        IMPORT_EXPORT_ERROR_CODES.EXPORT_FAILED,
       )
     }
   }
@@ -240,7 +292,9 @@ export class ImageModelManager implements IImageModelManager {
     if (!Array.isArray(data)) {
       throw new ImportExportError(
         'Invalid data format: expected array of ImageModelConfig',
-        await this.getDataType()
+        await this.getDataType(),
+        undefined,
+        IMPORT_EXPORT_ERROR_CODES.VALIDATION_ERROR,
       )
     }
 
@@ -315,9 +369,49 @@ export class ImageModelManager implements IImageModelManager {
 
   // 确保配置是自包含的（包含完整的provider和model信息）
   private ensureSelfContained(config: ImageModelConfig): ImageModelConfig {
-    // 如果已经有完整的自包含字段，直接返回
+    // 如果已经有完整的自包含字段，尽量补齐新增的 provider 字段（保持向后兼容）
     if (config.provider && config.model) {
-      return config
+      let nextConfig = config
+
+      try {
+        const adapter = this.registry.getAdapter(config.providerId)
+        const latestProvider = adapter.getProvider()
+        const latestStaticModel = this.registry
+          .getStaticModels(config.providerId)
+          .find(model => model.id === config.modelId)
+
+        nextConfig = {
+          ...nextConfig,
+          provider: {
+            ...nextConfig.provider,
+            ...latestProvider
+          },
+          model: latestStaticModel
+            ? {
+                ...nextConfig.model,
+                ...latestStaticModel
+              }
+            : nextConfig.model
+        }
+      } catch {
+        // ignore - unknown provider or adapter failure
+      }
+
+      const providerId = (nextConfig.provider.id || nextConfig.providerId || '').toLowerCase()
+
+      // Historical metadata might incorrectly mark Ollama as CORS-restricted.
+      // Ollama can be configured (CORS/reverse-proxy), so we force-disable the tag.
+      if (providerId === 'ollama' && nextConfig.provider.corsRestricted !== false) {
+        return {
+          ...nextConfig,
+          provider: {
+            ...nextConfig.provider,
+            corsRestricted: false
+          }
+        }
+      }
+
+      return nextConfig
     }
 
     try {
@@ -371,6 +465,66 @@ export class ImageModelManager implements IImageModelManager {
         paramOverrides: config.paramOverrides ?? {}
       } as ImageModelConfig
     }
+  }
+
+  /**
+   * 获取可从默认配置回填到内置模型中的缺失必填连接字段
+   */
+  private getBackfillableBuiltinConnectionFields(
+    configId: string,
+    storedConfig: ImageModelConfig,
+    defaultConfig: ImageModelConfig
+  ): string[] {
+    const builtinIds = getBuiltinImageConfigIds()
+    if (!builtinIds.includes(configId)) {
+      return []
+    }
+
+    const requiredFields = defaultConfig.provider.connectionSchema?.required || ['apiKey']
+    return requiredFields.filter((field) => {
+      const storedValue = storedConfig.connectionConfig?.[field]
+      const defaultValue = defaultConfig.connectionConfig?.[field]
+      return !this.hasConnectionValue(storedValue) && this.hasConnectionValue(defaultValue)
+    })
+  }
+
+  /**
+   * 判断是否应该自动启用内置模型
+   * 条件：内置模型 + 存储的配置为 disabled + 回填后能满足所有必填连接字段
+   */
+  private shouldAutoEnableBuiltinModel(
+    configId: string,
+    storedConfig: ImageModelConfig,
+    defaultConfig: ImageModelConfig,
+    backfillableFields?: string[]
+  ): boolean {
+    const builtinIds = getBuiltinImageConfigIds()
+    if (!builtinIds.includes(configId)) {
+      return false
+    }
+
+    if (storedConfig.enabled !== false) {
+      return false
+    }
+
+    const fieldsToBackfill = backfillableFields ?? this.getBackfillableBuiltinConnectionFields(configId, storedConfig, defaultConfig)
+    if (fieldsToBackfill.length === 0) {
+      return false
+    }
+
+    const requiredFields = defaultConfig.provider.connectionSchema?.required || ['apiKey']
+    const mergedConnectionConfig: Record<string, unknown> = {
+      ...(storedConfig.connectionConfig || {})
+    }
+    for (const field of fieldsToBackfill) {
+      mergedConnectionConfig[field] = defaultConfig.connectionConfig?.[field]
+    }
+
+    return requiredFields.every((field) => this.hasConnectionValue(mergedConnectionConfig[field]))
+  }
+
+  private hasConnectionValue(value: unknown): boolean {
+    return typeof value === 'string' ? value.trim().length > 0 : !!value
   }
 
   private validateConfig(config: ImageModelConfig): void {
@@ -435,7 +589,11 @@ export class ImageModelManager implements IImageModelManager {
     // 因此不需要在此验证模型是否存在
 
     if (errors.length > 0) {
-      throw new Error(`Invalid configuration: ${errors.join(', ')}`)
+      throw new ImageModelManagerError(
+        IMAGE_ERROR_CODES.CONFIG_INVALID,
+        errors.join(', '),
+        { details: errors.join(', ') },
+      )
     }
   }
 }

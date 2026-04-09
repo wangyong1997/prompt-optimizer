@@ -22,17 +22,6 @@
             >
               {{ category.name }}
             </n-tag>
-            <n-tag
-              v-if="favorite.isPublic"
-              type="warning"
-              size="small"
-              style="margin-left: 4px"
-            >
-              <template #icon>
-                <n-icon><Star /></n-icon>
-              </template>
-              公开
-            </n-tag>
           </div>
           <div class="item-actions">
             <n-button-group size="small">
@@ -135,7 +124,6 @@ import {
   Copy,
   PlayerPlay,
   Eye,
-  Star,
   DotsVertical,
   Edit,
   Trash,
@@ -239,6 +227,8 @@ const handleActionSelect = (key: string) => {
 </script>
 
 <style scoped>
+@reference "../styles/index.css";
+
 .favorite-list-item {
   @apply transition-colors duration-200;
   @apply hover:bg-gray-50 dark:hover:bg-gray-800;

@@ -1,5 +1,6 @@
 import { Template } from './types';
 import { ALL_TEMPLATES } from './default-templates';
+import { TemplateLoadError, TemplateValidationError } from './errors';
 
 /**
  * 静态模板加载器 - 简化版
@@ -8,17 +9,21 @@ import { ALL_TEMPLATES } from './default-templates';
  * 🔄 直接使用：无需复杂的元数据推导和映射
  */
 
-// 类型定义（支持 8 类：基础 + 上下文 + 图像）
+// 类型定义（支持 9 类：基础 + 上下文 + 图像 + 评估）
 export type TemplateType =
   | 'optimize'
   | 'user-optimize'
   | 'text2imageOptimize'
   | 'image2imageOptimize'
+  | 'multiimageOptimize'
   | 'imageIterate'
   | 'iterate'
-  | 'context-system-optimize'
+  | 'conversation-message-optimize'
   | 'context-user-optimize'
-  | 'context-iterate';
+  | 'context-iterate'
+  | 'evaluation'
+  | 'image-prompt-composition'
+  | 'image-prompt-migration';
 export type Language = 'zh' | 'en';
 
 export interface StaticTemplateCollection {
@@ -72,11 +77,15 @@ export class StaticLoader {
         'user-optimize': { zh: {}, en: {} },
         'text2imageOptimize': { zh: {}, en: {} },
         'image2imageOptimize': { zh: {}, en: {} },
+        'multiimageOptimize': { zh: {}, en: {} },
         'imageIterate': { zh: {}, en: {} },
         'iterate': { zh: {}, en: {} },
-        'context-system-optimize': { zh: {}, en: {} },
+        'conversation-message-optimize': { zh: {}, en: {} },
         'context-user-optimize': { zh: {}, en: {} },
-        'context-iterate': { zh: {}, en: {} }
+        'context-iterate': { zh: {}, en: {} },
+        'evaluation': { zh: {}, en: {} },
+        'image-prompt-composition': { zh: {}, en: {} },
+        'image-prompt-migration': { zh: {}, en: {} }
       };
 
       // 处理每个模板
@@ -87,7 +96,9 @@ export class StaticLoader {
         // 验证内置模板必须包含language字段
         if (template.isBuiltin && !language) {
           console.error(`❌ 内置模板缺少language字段: ${id}`);
-          throw new Error(`Built-in template '${id}' is missing required 'language' field in metadata`);
+          throw new TemplateValidationError(
+            `Built-in template '${id}' is missing required 'language' field in metadata`,
+          );
         }
         
         // 规范化模板类型（直接使用 metadata.templateType）
@@ -102,17 +113,29 @@ export class StaticLoader {
           case 'image2imageOptimize':
             normalizedType = 'image2imageOptimize';
             break;
+          case 'multiimageOptimize':
+            normalizedType = 'multiimageOptimize';
+            break;
           case 'imageIterate':
             normalizedType = 'imageIterate';
             break;
-          case 'contextSystemOptimize':
-            normalizedType = 'context-system-optimize';
+          case 'conversationMessageOptimize':
+            normalizedType = 'conversation-message-optimize';
             break;
           case 'contextUserOptimize':
             normalizedType = 'context-user-optimize';
             break;
           case 'contextIterate':
             normalizedType = 'context-iterate';
+            break;
+          case 'evaluation':
+            normalizedType = 'evaluation';
+            break;
+          case 'image-prompt-composition':
+            normalizedType = 'image-prompt-composition';
+            break;
+          case 'image-prompt-migration':
+            normalizedType = 'image-prompt-migration';
             break;
           case 'iterate':
           case 'optimize':
@@ -126,8 +149,9 @@ export class StaticLoader {
         
         // 只有内置模板且有language字段时才按语言分类
         if (template.isBuiltin && language) {
-          byLanguage[language][id] = template;
-          byType[normalizedType][language][id] = template;
+          const lang = language as Language;  // 类型断言确保language是Language类型
+          byLanguage[lang][id] = template;
+          byType[normalizedType][lang][id] = template;
         }
       });
 
@@ -141,11 +165,15 @@ export class StaticLoader {
         'user-optimize': Object.keys(byType['user-optimize'].zh).length + Object.keys(byType['user-optimize'].en).length,
         text2imageOptimize: Object.keys(byType.text2imageOptimize.zh).length + Object.keys(byType.text2imageOptimize.en).length,
         image2imageOptimize: Object.keys(byType.image2imageOptimize.zh).length + Object.keys(byType.image2imageOptimize.en).length,
+        multiimageOptimize: Object.keys(byType.multiimageOptimize.zh).length + Object.keys(byType.multiimageOptimize.en).length,
         imageIterate: Object.keys(byType.imageIterate.zh).length + Object.keys(byType.imageIterate.en).length,
         iterate: Object.keys(byType.iterate.zh).length + Object.keys(byType.iterate.en).length,
-        'context-system-optimize': Object.keys(byType['context-system-optimize'].zh).length + Object.keys(byType['context-system-optimize'].en).length,
+        'conversation-message-optimize': Object.keys(byType['conversation-message-optimize'].zh).length + Object.keys(byType['conversation-message-optimize'].en).length,
         'context-user-optimize': Object.keys(byType['context-user-optimize'].zh).length + Object.keys(byType['context-user-optimize'].en).length,
-        'context-iterate': Object.keys(byType['context-iterate'].zh).length + Object.keys(byType['context-iterate'].en).length
+        'context-iterate': Object.keys(byType['context-iterate'].zh).length + Object.keys(byType['context-iterate'].en).length,
+        evaluation: Object.keys(byType.evaluation.zh).length + Object.keys(byType.evaluation.en).length,
+        'image-prompt-composition': Object.keys(byType['image-prompt-composition'].zh).length + Object.keys(byType['image-prompt-composition'].en).length,
+        'image-prompt-migration': Object.keys(byType['image-prompt-migration'].zh).length + Object.keys(byType['image-prompt-migration'].en).length
       });
 
       StaticLoader.templateCache = result;
@@ -153,7 +181,10 @@ export class StaticLoader {
 
     } catch (error) {
       console.error('❌ 静态导入加载模板失败:', error);
-      throw new Error(`Failed to load static templates: ${error}`);
+      throw new TemplateLoadError(
+        'static-loader',
+        `Failed to load static templates: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 

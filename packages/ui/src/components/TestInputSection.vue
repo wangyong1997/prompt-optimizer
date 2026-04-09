@@ -36,6 +36,7 @@
         clearable
         show-count
         :size="size"
+        :data-testid="props.testId"
       />
 
       <!-- 帮助文本 -->
@@ -50,7 +51,8 @@
         v-model:value="fullscreenValue"
         type="textarea"
         :placeholder="placeholder"
-        :autosize="{ minRows: 20 }"
+        :autosize="false"
+        style="height: 100%; min-height: 0;"
         clearable
         show-count
       />
@@ -79,6 +81,9 @@ interface Props {
   enableFullscreen?: boolean
   minRows?: number
   maxRows?: number
+
+  /** E2E: stable selector for the textarea input */
+  testId?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -89,7 +94,8 @@ const props = withDefaults(defineProps<Props>(), {
   mode: 'normal',
   enableFullscreen: true,
   minRows: 3,
-  maxRows: 8
+  maxRows: 8,
+  testId: undefined
 })
 
 const emit = defineEmits<{

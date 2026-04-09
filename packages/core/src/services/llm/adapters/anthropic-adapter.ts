@@ -1,10 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { AbstractTextProviderAdapter } from './abstract-adapter'
+import { APIError } from '../errors'
 import type {
   TextProvider,
   TextModel,
   TextModelConfig,
   Message,
+  ImageUnderstandingRequest,
   LLMResponse,
   StreamHandlers,
   ParameterDefinition,
@@ -41,7 +43,8 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
       description: 'Anthropic Claude models (Official SDK)',
       requiresApiKey: true,
       defaultBaseURL: 'https://api.anthropic.com',
-      supportsDynamicModels: false, // Anthropic不支持动态模型获取
+      supportsDynamicModels: true,
+      apiKeyUrl: 'https://console.anthropic.com/settings/keys',
       connectionSchema: {
         required: ['apiKey'],
         optional: ['baseURL'],
@@ -92,13 +95,54 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
   }
 
   /**
-   * 动态获取模型列表（Anthropic不支持，返回静态列表）
+   * 动态获取模型列表
    * @param config 连接配置
-   * @returns 静态模型列表
+   * @returns 动态获取的模型列表
    */
-  public async getModelsAsync(_config: TextModelConfig): Promise<TextModel[]> {
-    console.log('[AnthropicAdapter] Anthropic does not support dynamic model fetching, returning static list')
-    return this.getModels()
+  public async getModelsAsync(config: TextModelConfig): Promise<TextModel[]> {
+    const client = this.createClient(config)
+
+    try {
+      const response = await client.models.list()
+
+      // 检查返回格式
+      if (response && response.data && Array.isArray(response.data)) {
+        const models = response.data
+          .map((model: any) => {
+            // 使用 buildDefaultModel 为每个模型 ID 创建 TextModel 对象
+            // Anthropic API 返回的 model 对象包含: id, name, version, capabilities
+            return this.buildDefaultModel(model.id)
+          })
+          .sort((a, b) => a.id.localeCompare(b.id))
+
+        if (models.length === 0) {
+          throw new APIError('API returned empty model list')
+        }
+
+        console.log(`[AnthropicAdapter] Successfully fetched ${models.length} models`)
+        return models
+      }
+
+      throw new APIError('Unexpected API response format')
+    } catch (error: any) {
+      console.error('[AnthropicAdapter] Failed to fetch models:', error)
+
+      // 连接错误处理（包括跨域检测）
+      if (error.message && (error.message.includes('Failed to fetch') ||
+          error.message.includes('NetworkError') ||
+          error.message.includes('ECONNREFUSED') ||
+          error.message.includes('CORS'))) {
+        throw new APIError(`Network error: ${error.message}`)
+      }
+
+      // API 错误处理
+      if (error.status) {
+        throw new APIError(`Anthropic API error (${error.status}): ${error.message}`)
+      }
+
+      // 其他错误
+      throw error
+    }
   }
 
   // ===== 参数定义（用于buildDefaultModel） =====
@@ -179,7 +223,9 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
    * 返回空对象,让服务器使用官方默认值,避免客户端错误默认值影响效果
    */
   protected getDefaultParameterValues(_modelId: string): Record<string, unknown> {
-    return {}
+    return {
+      max_tokens: DEFAULT_MAX_TOKENS, // 8192 - Anthropic API 强制要求
+    }
   }
 
   // ===== 核心方法实现 =====
@@ -206,13 +252,11 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
 
       const requestParams: any = {
         model: config.modelMeta.id,
-        messages: this.convertMessages(messages)
+        messages: this.convertMessages(messages),
+        max_tokens: max_tokens ?? DEFAULT_MAX_TOKENS // 强制预设值，Anthropic API 必需
       }
 
       // 只在用户明确设置时才添加参数，避免使用客户端默认值
-      if (max_tokens !== undefined) {
-        requestParams.max_tokens = max_tokens
-      }
       if (temperature !== undefined) {
         requestParams.temperature = temperature
       }
@@ -259,6 +303,197 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
     }
   }
 
+  protected async doSendImageUnderstanding(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig
+  ): Promise<LLMResponse> {
+    const client = this.createClient(config)
+
+    try {
+      const mergedParams = {
+        ...(config.paramOverrides || {}),
+        ...(request.paramOverrides || {})
+      } as Record<string, unknown>
+
+      const {
+        max_tokens,
+        temperature,
+        top_p,
+        top_k,
+        thinking_budget_tokens,
+        responseMimeType: _responseMimeType,
+        ...otherParams
+      } = mergedParams as any
+
+      const requestParams: any = {
+        model: config.modelMeta.id,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: request.userPrompt
+              },
+              ...request.images.map((image) => ({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: image.mimeType || 'image/png',
+                  data: image.b64
+                }
+              }))
+            ]
+          }
+        ],
+        max_tokens: max_tokens ?? DEFAULT_MAX_TOKENS
+      }
+
+      if (temperature !== undefined) {
+        requestParams.temperature = temperature
+      }
+      if (top_p !== undefined) {
+        requestParams.top_p = top_p
+      }
+      if (top_k !== undefined) {
+        requestParams.top_k = top_k
+      }
+      if (request.systemPrompt?.trim()) {
+        requestParams.system = request.systemPrompt
+      }
+      if (thinking_budget_tokens !== undefined && thinking_budget_tokens >= 1024) {
+        requestParams.thinking = {
+          type: 'enabled',
+          budget_tokens: thinking_budget_tokens
+        }
+      }
+
+      Object.assign(requestParams, otherParams)
+
+      const response = await client.messages.create(requestParams)
+      const reasoning = this.extractThinking(response)
+
+      return {
+        content: this.extractContent(response),
+        reasoning,
+        metadata: {
+          model: response.model,
+          finishReason: response.stop_reason || undefined,
+          tokens: response.usage ? (response.usage.input_tokens || 0) + (response.usage.output_tokens || 0) : undefined
+        }
+      }
+    } catch (error) {
+      throw this.handleError(error)
+    }
+  }
+
+  protected async doSendImageUnderstandingStream(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig,
+    callbacks: StreamHandlers
+  ): Promise<void> {
+    const client = this.createClient(config)
+    const thinkState = { isInThinkMode: false, buffer: '' }
+
+    try {
+      const mergedParams = {
+        ...(config.paramOverrides || {}),
+        ...(request.paramOverrides || {})
+      } as Record<string, unknown>
+
+      const {
+        max_tokens,
+        temperature,
+        top_p,
+        top_k,
+        thinking_budget_tokens,
+        responseMimeType: _responseMimeType,
+        ...otherParams
+      } = mergedParams as any
+
+      const requestParams: any = {
+        model: config.modelMeta.id,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: request.userPrompt
+              },
+              ...request.images.map((image) => ({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: image.mimeType || 'image/png',
+                  data: image.b64
+                }
+              }))
+            ]
+          }
+        ],
+        max_tokens: max_tokens ?? DEFAULT_MAX_TOKENS
+      }
+
+      if (temperature !== undefined) {
+        requestParams.temperature = temperature
+      }
+      if (top_p !== undefined) {
+        requestParams.top_p = top_p
+      }
+      if (top_k !== undefined) {
+        requestParams.top_k = top_k
+      }
+      if (request.systemPrompt?.trim()) {
+        requestParams.system = request.systemPrompt
+      }
+      if (thinking_budget_tokens !== undefined && thinking_budget_tokens >= 1024) {
+        requestParams.thinking = {
+          type: 'enabled',
+          budget_tokens: thinking_budget_tokens
+        }
+      }
+
+      Object.assign(requestParams, otherParams)
+
+      const stream = await client.messages.stream(requestParams)
+
+      let accumulatedReasoning = ''
+
+      ;(stream as any).on('thinking', (thinkingDelta: string) => {
+        accumulatedReasoning += thinkingDelta
+        callbacks.onReasoningToken?.(thinkingDelta)
+      })
+
+      ;(stream as any).on('text', (text: string) => {
+        this.processStreamContentWithThinkTags(text, callbacks, thinkState)
+      })
+
+      ;(stream as any).on('message', (message: any) => {
+        callbacks.onComplete({
+          content: this.extractContent(message),
+          reasoning: accumulatedReasoning || undefined,
+          metadata: {
+            model: message.model,
+            finishReason: message.stop_reason || undefined,
+            tokens: message.usage
+              ? (message.usage.input_tokens || 0) + (message.usage.output_tokens || 0)
+              : undefined
+          }
+        })
+      })
+
+      ;(stream as any).on('error', (error: any) => {
+        callbacks.onError(error)
+      })
+
+      await stream.finalMessage()
+    } catch (error) {
+      callbacks.onError(this.handleError(error))
+      throw error
+    }
+  }
+
   /**
    * 发送流式消息（真正的 SSE 流）
    */
@@ -283,13 +518,11 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
 
       const requestParams: any = {
         model: config.modelMeta.id,
-        messages: this.convertMessages(messages)
+        messages: this.convertMessages(messages),
+        max_tokens: max_tokens ?? DEFAULT_MAX_TOKENS // 强制预设值，Anthropic API 必需
       }
 
       // 只在用户明确设置时才添加参数，避免使用客户端默认值
-      if (max_tokens !== undefined) {
-        requestParams.max_tokens = max_tokens
-      }
       if (temperature !== undefined) {
         requestParams.temperature = temperature
       }
@@ -387,13 +620,11 @@ export class AnthropicAdapter extends AbstractTextProviderAdapter {
       const requestParams: any = {
         model: config.modelMeta.id,
         messages: this.convertMessages(messages),
-        tools: this.convertTools(tools)
+        tools: this.convertTools(tools),
+        max_tokens: max_tokens ?? DEFAULT_MAX_TOKENS // 强制预设值，Anthropic API 必需
       }
 
       // 只在用户明确设置时才添加参数，避免使用客户端默认值
-      if (max_tokens !== undefined) {
-        requestParams.max_tokens = max_tokens
-      }
       if (temperature !== undefined) {
         requestParams.temperature = temperature
       }

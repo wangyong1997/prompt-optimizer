@@ -1,4 +1,5 @@
 import { AbstractImageProviderAdapter } from './abstract-adapter'
+import { ImageError } from '../errors'
 import type {
   ImageProvider,
   ImageModel,
@@ -6,6 +7,7 @@ import type {
   ImageResult,
   ImageModelConfig
 } from '../types'
+import { IMAGE_ERROR_CODES } from '../../../constants/error-codes'
 
 export class SeedreamImageAdapter extends AbstractImageProviderAdapter {
   protected normalizeBaseUrl(base: string): string {
@@ -44,7 +46,7 @@ export class SeedreamImageAdapter extends AbstractImageProviderAdapter {
         capabilities: {
           text2image: true,
           image2image: true,
-          multiImage: false
+          multiImage: true
         },
         parameterDefinitions: [
           {
@@ -164,31 +166,40 @@ export class SeedreamImageAdapter extends AbstractImageProviderAdapter {
       }
     }
 
-    throw new Error(`Unsupported test type: ${testType}`)
+    throw new ImageError(IMAGE_ERROR_CODES.UNSUPPORTED_TEST_TYPE, undefined, { testType })
   }
 
   protected async doGenerate(request: ImageRequest, config: ImageModelConfig): Promise<ImageResult> {
-    // 构建请求体（隐藏多图相关参数，强制单图）
+    // 构建请求体
     const overrides: Record<string, any> = { ...config.paramOverrides, ...request.paramOverrides }
     delete overrides.n
     delete overrides.batch_size
+    delete overrides.response_format
     const payload: any = {
       model: config.modelId,
       prompt: request.prompt,
-      sequential_image_generation: 'disabled', // 固定禁用组图
+      sequential_image_generation: 'disabled', // 固定关闭组图输出，仅返回单张结果
+      response_format: 'b64_json', // 强制返回可持久化的 base64，避免 url-only 结果在浏览器侧二次抓取失败
       ...overrides,
       n: 1
     }
 
-    // 图生图支持：添加图像输入
-    if (request.inputImage?.b64) {
+    const inputImages = Array.isArray(request.inputImages)
+      ? request.inputImages.filter((image) => typeof image?.b64 === 'string' && image.b64.trim().length > 0)
+      : []
+
+    if (inputImages.length > 1) {
+      payload.image = inputImages.map((image) => {
+        const mime = image.mimeType || 'image/png'
+        return `data:${mime};base64,${image.b64}`
+      })
+    } else if (request.inputImage?.b64) {
       const mime = request.inputImage.mimeType || 'image/png'
       payload.image = `data:${mime};base64,${request.inputImage.b64}`
-    } else if (request.inputImage?.url) {
-      payload.image = request.inputImage.url
+    } else if (inputImages.length === 1) {
+      const mime = inputImages[0].mimeType || 'image/png'
+      payload.image = `data:${mime};base64,${inputImages[0].b64}`
     }
-
-    // 生成数量固定为1（当前不支持多图）
 
     const response = await this.apiCall(config, '/images/generations', {
       method: 'POST',
@@ -209,17 +220,16 @@ export class SeedreamImageAdapter extends AbstractImageProviderAdapter {
     })) || []
 
     if (images.length === 0) {
-      throw new Error('未返回图片数据')
+      throw new ImageError(IMAGE_ERROR_CODES.INVALID_RESPONSE_FORMAT)
     }
 
-    return {
+      return {
       images,
       metadata: {
         providerId: 'seedream',
         modelId: config.modelId,
         configId: config.id,
-        usage: data.usage,
-        created: data.created
+        usage: data.usage
       }
     }
   }
@@ -235,7 +245,7 @@ export class SeedreamImageAdapter extends AbstractImageProviderAdapter {
       } catch {
         errorMessage = response.statusText
       }
-      throw new Error(`Seedream API error: ${response.status} ${errorMessage}`)
+      throw new ImageError(IMAGE_ERROR_CODES.GENERATION_FAILED, `Seedream API error: ${response.status} ${errorMessage}`)
     }
     return await response.json()
   }

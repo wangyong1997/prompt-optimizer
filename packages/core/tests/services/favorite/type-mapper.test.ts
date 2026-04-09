@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TypeMapper, type FunctionModeMapping } from '../../../src/services/favorite/type-mapper';
 import type { PromptRecordType } from '../../../src/services/history/types';
 
@@ -42,8 +42,8 @@ describe('TypeMapper', () => {
   });
 
   describe('mapFromRecordType - 上下文模式映射', () => {
-    it('应该将 contextSystemOptimize 映射为 context/system', () => {
-      const result = TypeMapper.mapFromRecordType('contextSystemOptimize');
+    it('应该将 conversationMessageOptimize 映射为 context/system', () => {
+      const result = TypeMapper.mapFromRecordType('conversationMessageOptimize');
       expect(result).toEqual({
         functionMode: 'context',
         optimizationMode: 'system'
@@ -105,6 +105,14 @@ describe('TypeMapper', () => {
       expect(result).toEqual({
         functionMode: 'image',
         imageSubMode: 'image2image'
+      });
+    });
+
+    it('应该将 multiimageOptimize 映射为 image/multiimage', () => {
+      const result = TypeMapper.mapFromRecordType('multiimageOptimize');
+      expect(result).toEqual({
+        functionMode: 'image',
+        imageSubMode: 'multiimage'
       });
     });
   });
@@ -173,6 +181,14 @@ describe('TypeMapper', () => {
       const mapping: FunctionModeMapping = {
         functionMode: 'image',
         imageSubMode: 'image2image'
+      };
+      expect(TypeMapper.validateMapping(mapping)).toBe(true);
+    });
+
+    it('应该接受合法的 image/multiimage 映射', () => {
+      const mapping: FunctionModeMapping = {
+        functionMode: 'image',
+        imageSubMode: 'multiimage'
       };
       expect(TypeMapper.validateMapping(mapping)).toBe(true);
     });
@@ -278,13 +294,13 @@ describe('TypeMapper', () => {
       expect(result).toEqual(['userOptimize']);
     });
 
-    it('应该从 context/system 推断出 contextSystemOptimize 和 contextIterate', () => {
+    it('应该从 context/system 推断出 conversationMessageOptimize 和 contextIterate', () => {
       const mapping: FunctionModeMapping = {
         functionMode: 'context',
         optimizationMode: 'system'
       };
       const result = TypeMapper.inferRecordTypes(mapping);
-      expect(result).toEqual(['contextSystemOptimize', 'contextIterate']);
+      expect(result).toEqual(['conversationMessageOptimize', 'contextIterate']);
     });
 
     it('应该从 context/user 推断出 contextUserOptimize', () => {
@@ -319,6 +335,15 @@ describe('TypeMapper', () => {
       expect(result).toEqual(['image2imageOptimize']);
     });
 
+    it('应该从 image/multiimage 推断出 multiimageOptimize', () => {
+      const mapping: FunctionModeMapping = {
+        functionMode: 'image',
+        imageSubMode: 'multiimage'
+      };
+      const result = TypeMapper.inferRecordTypes(mapping);
+      expect(result).toEqual(['multiimageOptimize']);
+    });
+
     it('应该对非法映射返回空数组', () => {
       const mapping = {
         functionMode: 'basic' as const,
@@ -336,14 +361,15 @@ describe('TypeMapper', () => {
         'userOptimize',
         'iterate',
         'test',
-        'contextSystemOptimize',
+        'conversationMessageOptimize',
         'contextUserOptimize',
         'contextIterate',
         'imageOptimize',
         'contextImageOptimize',
         'imageIterate',
         'text2imageOptimize',
-        'image2imageOptimize'
+        'image2imageOptimize',
+        'multiimageOptimize'
       ];
 
       allTypes.forEach(type => {
@@ -366,7 +392,7 @@ describe('TypeMapper', () => {
           mapping: { functionMode: 'basic', optimizationMode: 'user' }
         },
         {
-          recordType: 'contextSystemOptimize',
+          recordType: 'conversationMessageOptimize',
           mapping: { functionMode: 'context', optimizationMode: 'system' }
         },
         {
@@ -380,6 +406,10 @@ describe('TypeMapper', () => {
         {
           recordType: 'image2imageOptimize',
           mapping: { functionMode: 'image', imageSubMode: 'image2image' }
+        },
+        {
+          recordType: 'multiimageOptimize',
+          mapping: { functionMode: 'image', imageSubMode: 'multiimage' }
         }
       ];
 

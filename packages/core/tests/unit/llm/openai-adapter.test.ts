@@ -1,14 +1,25 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { OpenAIAdapter } from '../../../src/services/llm/adapters/openai-adapter';
 import type { TextModelConfig, Message } from '../../../src/services/llm/types';
-import OpenAI from 'openai';
 
-// Mock OpenAI SDK
-vi.mock('openai');
+// 创建 mock OpenAI 实例
+let mockOpenAIInstance: any;
+let mockOpenAIConfig: any;
+
+// Mock OpenAI SDK - 使用工厂函数返回一个类
+vi.mock('openai', () => {
+  return {
+    default: class MockOpenAI {
+      constructor(config: any) {
+        mockOpenAIConfig = config;
+        return mockOpenAIInstance;
+      }
+    }
+  };
+});
 
 describe('OpenAIAdapter', () => {
   let adapter: OpenAIAdapter;
-  let mockOpenAIInstance: any;
 
   const mockConfig: TextModelConfig = {
     id: 'openai',
@@ -31,14 +42,14 @@ describe('OpenAIAdapter', () => {
       }
     },
     modelMeta: {
-      id: 'gpt-5-2025-08-07',
-      name: 'GPT-5',
-      description: 'Latest GPT-5 model',
+      id: 'gpt-5-mini',
+      name: 'GPT-5 Mini',
+      description: 'Fast, capable, and efficient small model',
       providerId: 'openai',
       capabilities: {
         supportsTools: true,
         supportsReasoning: false,
-        maxContextLength: 128000
+        maxContextLength: 1047576
       },
       parameterDefinitions: [
         {
@@ -67,9 +78,10 @@ describe('OpenAIAdapter', () => {
 
   beforeEach(() => {
     adapter = new OpenAIAdapter();
+    mockOpenAIConfig = undefined;
     vi.clearAllMocks();
 
-    // 创建 mock OpenAI 实例
+    // 在每个测试前重新创建 mock OpenAI 实例
     mockOpenAIInstance = {
       chat: {
         completions: {
@@ -109,12 +121,12 @@ describe('OpenAIAdapter', () => {
       expect(Array.isArray(models)).toBe(true);
       expect(models.length).toBeGreaterThan(0);
 
-      // 验证至少包含 GPT-5
-      const gpt5 = models.find(m => m.id === 'gpt-5-2025-08-07');
-      expect(gpt5).toBeDefined();
-      expect(gpt5?.name).toBe('GPT-5');
-      expect(gpt5?.providerId).toBe('openai');
-      expect(gpt5?.capabilities.supportsTools).toBe(true);
+      // 验证至少包含 GPT-5 Mini
+      const gpt5Mini = models.find(m => m.id === 'gpt-5-mini');
+      expect(gpt5Mini).toBeDefined();
+      expect(gpt5Mini?.name).toBe('GPT-5 Mini');
+      expect(gpt5Mini?.providerId).toBe('openai');
+      expect(gpt5Mini?.capabilities.supportsTools).toBe(true);
     });
 
     it('should have capabilities for each model', () => {
@@ -175,8 +187,6 @@ describe('OpenAIAdapter', () => {
         }
       };
 
-      // Mock OpenAI constructor to return our mock instance
-      vi.mocked(OpenAI).mockImplementation(() => mockOpenAIInstance as any);
       mockOpenAIInstance.chat.completions.create.mockResolvedValue(mockResponse);
 
       const response = await adapter.sendMessage(mockMessages, mockConfig);
@@ -184,7 +194,7 @@ describe('OpenAIAdapter', () => {
       expect(response.content).toBe('Hello! How can I help you?');
       expect(response.reasoning).toBeUndefined();
       expect(response.metadata).toEqual({
-        model: 'gpt-5-2025-08-07',
+        model: 'gpt-5-mini',
         finishReason: 'stop'
       });
     });
@@ -193,7 +203,6 @@ describe('OpenAIAdapter', () => {
       const originalError = new Error('OpenAI API Error');
       originalError.stack = 'Original Stack Trace';
 
-      vi.mocked(OpenAI).mockImplementation(() => mockOpenAIInstance as any);
       mockOpenAIInstance.chat.completions.create.mockRejectedValue(originalError);
 
       try {
@@ -202,6 +211,118 @@ describe('OpenAIAdapter', () => {
       } catch (error: any) {
         // 验证错误堆栈被保留
         expect(error.stack).toContain('Original Stack Trace');
+      }
+    });
+  });
+
+  describe('browser fetch credential handling', () => {
+    const mockBrowserResponse = {
+      id: 'chatcmpl-browser',
+      object: 'chat.completion',
+      created: Date.now(),
+      model: 'gpt-5-mini',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: 'ok'
+        },
+        finish_reason: 'stop'
+      }]
+    };
+
+    it('should force credentials=omit for cross-origin browser requests', async () => {
+      const originalWindow = (globalThis as any).window;
+      const originalFetch = (globalThis as any).fetch;
+      const runtimeFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+
+      (globalThis as any).window = {
+        location: {
+          origin: 'https://prompt.always200.com',
+          href: 'https://prompt.always200.com/'
+        }
+      };
+      (globalThis as any).fetch = runtimeFetch;
+
+      mockOpenAIInstance.chat.completions.create.mockResolvedValue(mockBrowserResponse);
+
+      try {
+        await adapter.sendMessage(mockMessages, mockConfig);
+
+        expect(mockOpenAIConfig?.dangerouslyAllowBrowser).toBe(true);
+        expect(typeof mockOpenAIConfig?.fetch).toBe('function');
+
+        await mockOpenAIConfig.fetch('https://api-inference.modelscope.cn/v1/chat/completions', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            Authorization: 'Bearer test-api-key',
+            'Content-Type': 'application/json',
+            'x-stainless-lang': 'js',
+            'User-Agent': 'OpenAI/JS test'
+          }
+        });
+
+        const [, requestInit] = runtimeFetch.mock.calls[0];
+        expect(requestInit.credentials).toBe('omit');
+        expect(requestInit.mode).toBe('cors');
+
+        const outgoingHeaders = new Headers(requestInit.headers);
+        expect(outgoingHeaders.get('authorization')).toBe('Bearer test-api-key');
+        expect(outgoingHeaders.get('content-type')).toBe('application/json');
+        expect(outgoingHeaders.get('x-stainless-lang')).toBeNull();
+        expect(outgoingHeaders.get('user-agent')).toBeNull();
+      } finally {
+        if (originalWindow === undefined) {
+          delete (globalThis as any).window;
+        } else {
+          (globalThis as any).window = originalWindow;
+        }
+
+        if (originalFetch === undefined) {
+          delete (globalThis as any).fetch;
+        } else {
+          (globalThis as any).fetch = originalFetch;
+        }
+      }
+    });
+
+    it('should keep same-origin browser requests unchanged', async () => {
+      const originalWindow = (globalThis as any).window;
+      const originalFetch = (globalThis as any).fetch;
+      const runtimeFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+
+      (globalThis as any).window = {
+        location: {
+          origin: 'https://prompt.always200.com',
+          href: 'https://prompt.always200.com/'
+        }
+      };
+      (globalThis as any).fetch = runtimeFetch;
+
+      mockOpenAIInstance.chat.completions.create.mockResolvedValue(mockBrowserResponse);
+
+      try {
+        await adapter.sendMessage(mockMessages, mockConfig);
+
+        await mockOpenAIConfig.fetch('/api/proxy/chat', {
+          method: 'POST'
+        });
+
+        const [, requestInit] = runtimeFetch.mock.calls[0];
+        expect(requestInit.credentials).toBeUndefined();
+      } finally {
+        if (originalWindow === undefined) {
+          delete (globalThis as any).window;
+        } else {
+          (globalThis as any).window = originalWindow;
+        }
+
+        if (originalFetch === undefined) {
+          delete (globalThis as any).fetch;
+        } else {
+          (globalThis as any).fetch = originalFetch;
+        }
       }
     });
   });
@@ -237,7 +358,6 @@ describe('OpenAIAdapter', () => {
         }
       };
 
-      vi.mocked(OpenAI).mockImplementation(() => mockOpenAIInstance as any);
       mockOpenAIInstance.chat.completions.create.mockResolvedValue(mockStream);
 
       const callbacks = {
@@ -256,6 +376,76 @@ describe('OpenAIAdapter', () => {
     });
 
     // 删除"should call onError with preserved stack" - 这是过度测试错误堆栈保留的内部实现细节
+  });
+
+  describe('sendImageUnderstandingStream', () => {
+    it('should stream multimodal content with image_url payloads', async () => {
+      const mockStream = {
+        [Symbol.asyncIterator]: async function* () {
+          yield {
+            choices: [{
+              delta: { content: '视觉' },
+              finish_reason: null
+            }]
+          };
+          yield {
+            choices: [{
+              delta: { content: '结果' },
+              finish_reason: 'stop'
+            }]
+          };
+        }
+      };
+
+      mockOpenAIInstance.chat.completions.create.mockResolvedValue(mockStream);
+
+      const callbacks = {
+        onToken: vi.fn(),
+        onReasoningToken: vi.fn(),
+        onComplete: vi.fn(),
+        onError: vi.fn()
+      };
+
+      await adapter.sendImageUnderstandingStream(
+        {
+          systemPrompt: 'system prompt',
+          userPrompt: 'describe this image',
+          images: [
+            {
+              b64: 'ZmFrZQ==',
+              mimeType: 'image/png'
+            }
+          ]
+        },
+        mockConfig,
+        callbacks
+      );
+
+      expect(mockOpenAIInstance.chat.completions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stream: true,
+          messages: expect.arrayContaining([
+            expect.objectContaining({ role: 'system', content: 'system prompt' }),
+            expect.objectContaining({
+              role: 'user',
+              content: expect.arrayContaining([
+                expect.objectContaining({ type: 'text', text: 'describe this image' }),
+                expect.objectContaining({
+                  type: 'image_url',
+                  image_url: expect.objectContaining({
+                    url: 'data:image/png;base64,ZmFrZQ=='
+                  })
+                })
+              ])
+            })
+          ])
+        })
+      );
+      expect(callbacks.onToken).toHaveBeenCalledWith('视觉');
+      expect(callbacks.onToken).toHaveBeenCalledWith('结果');
+      expect(callbacks.onComplete).toHaveBeenCalled();
+      expect(callbacks.onError).not.toHaveBeenCalled();
+    });
   });
 
   describe('error handling', () => {
@@ -282,9 +472,8 @@ describe('OpenAIAdapter', () => {
         }
       };
 
-      vi.mocked(OpenAI).mockImplementation(() => {
-        throw new Error('Invalid URL');
-      });
+      // 模拟 API 调用失败
+      mockOpenAIInstance.chat.completions.create.mockRejectedValue(new Error('Invalid URL'));
 
       await expect(
         adapter.sendMessage(mockMessages, configWithInvalidURL)

@@ -3,163 +3,46 @@
         <!-- 标题和统计信息 -->
         <template #header>
             <NSpace justify="space-between" align="center">
-                <div>
-                    <NSpace align="center" :size="8">
-                        <NText class="text-base font-semibold">
-                            {{ title || t("conversation.management.title") }}
-                        </NText>
-                        <!-- 系统模式标注 -->
-                        <NTag
-                            v-if="contextMode === 'system'"
-                            :size="tagSize"
-                            type="info"
-                            :bordered="false"
-                        >
-                            <template #icon>
-                                <svg
-                                    width="12"
-                                    height="12"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
-                                    <path
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                                    />
-                                    <path
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                    />
-                                </svg>
-                            </template>
-                            {{ t("contextMode.system.label") }}
-                        </NTag>
-                    </NSpace>
-                    <div
-                        v-if="messages.length > 0"
-                        class="flex items-center gap-2 mt-1"
+                <!-- 左侧：标题 -->
+                <NText class="text-base font-semibold">
+                    {{ title || t("conversation.management.title") }}
+                </NText>
+
+                <!-- 右侧：统计信息和操作按钮 -->
+                <NSpace :size="8" align="center">
+                    <!-- 消息数量 -->
+                    <NText v-if="messages.length > 0" :depth="3" style="font-size: 13px">
+                        💬 {{ t("conversation.stats.messages") }}: {{ messages.length }}
+                    </NText>
+
+                    <!-- 变量统计 -->
+                    <NText
+                        v-if="showVariablePreview && allUsedVariables.length > 0"
+                        :depth="3"
+                        style="font-size: 13px"
                     >
-                        <NTag :size="tagSize" type="info">
-                            {{
-                                t("conversation.messageCount", {
-                                    count: messages.length,
-                                })
-                            }}
-                        </NTag>
+                        🏷️ {{ t("conversation.stats.variables") }}: {{ allUsedVariables.length }}
+                    </NText>
 
-                        <!-- 变量统计 -->
-                        <NTag
-                            v-if="
-                                showVariablePreview &&
-                                allUsedVariables.length > 0
-                            "
-                            :size="tagSize"
-                            type="success"
-                        >
-                            <template #icon>
-                                <svg
-                                    width="12"
-                                    height="12"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
-                                    <path
-                                        d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-                                    />
-                                </svg>
-                            </template>
-                            {{
-                                t("variables.count", {
-                                    count: allUsedVariables.length,
-                                })
-                            }}
-                        </NTag>
-
-                        <!-- 缺失变量警告 -->
-                        <NTag
-                            v-if="allMissingVariables.length > 0"
-                            :size="tagSize"
-                            type="warning"
-                        >
-                            <template #icon>
-                                <svg
-                                    width="12"
-                                    height="12"
-                                    viewBox="0 0 20 20"
-                                    fill="currentColor"
-                                >
-                                    <path
-                                        fill-rule="evenodd"
-                                        d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.19-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
-                                        clip-rule="evenodd"
-                                    />
-                                </svg>
-                            </template>
-                            {{
-                                t("variables.missing", {
-                                    count: allMissingVariables.length,
-                                })
-                            }}
-                        </NTag>
-
-                        <!-- 工具数量统计 -->
-                        <NTag
-                            v-if="toolCount && toolCount > 0"
-                            :size="tagSize"
-                            type="primary"
-                        >
-                            <template #icon>
-                                <svg
-                                    width="12"
-                                    height="12"
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                >
-                                    <path
-                                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
-                                    />
-                                    <path
-                                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                    />
-                                </svg>
-                            </template>
-                            {{ t("tools.count", { count: toolCount }) }}
-                        </NTag>
-                    </div>
-                </div>
-
-                <!-- 操作按钮组 -->
-                <NSpace :size="buttonSize">
-                    <!-- 折叠/展开按钮 -->
-                    <NButton
-                        v-if="collapsible"
-                        @click="toggleCollapse"
-                        :size="buttonSize"
-                        quaternary
-                        circle
-                        :title="
-                            isCollapsed
-                                ? t('common.expand')
-                                : t('common.collapse')
-                        "
+                    <!-- 缺失变量警告 -->
+                    <NText
+                        v-if="allMissingVariables.length > 0"
+                        :depth="3"
+                        style="font-size: 13px; color: var(--warning-color)"
                     >
-                        <template #icon>
-                            <svg
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                class="transition-transform duration-200"
-                                :class="{ 'rotate-180': isCollapsed }"
-                            >
-                                <path
-                                    stroke-linecap="round"
-                                    stroke-linejoin="round"
-                                    stroke-width="2"
-                                    d="M19 9l-7 7-7-7"
-                                />
-                            </svg>
-                        </template>
-                    </NButton>
+                        ⚠️ {{ t("conversation.stats.missing") }}: {{ allMissingVariables.length }}
+                    </NText>
+
+                    <!-- 工具数量标签（可点击） -->
+                    <NText
+                        v-if="enableToolManagement"
+                        :depth="3"
+                        style="font-size: 13px; cursor: pointer"
+                        @click="emit('open-tool-manager')"
+                        :title="t('contextEditor.toolsTab')"
+                    >
+                        🔧 {{ t("conversation.stats.tools") }}: {{ toolCount || 0 }}
+                    </NText>
 
                     <!-- 打开上下文编辑器按钮 -->
                     <NButton
@@ -168,6 +51,7 @@
                         :size="buttonSize"
                         type="primary"
                         :loading="loading"
+                        data-testid="pro-multi-open-context-editor"
                     >
                         <template #icon>
                             <svg
@@ -214,15 +98,16 @@
                     </svg>
                 </template>
                 <template #extra>
-                    <NButton
-                        v-if="canEditMessages"
-                        @click="handleAddMessage"
-                        :size="buttonSize"
-                        type="primary"
-                        dashed
-                    >
-                        {{ t("conversation.addFirst") }}
-                    </NButton>
+                        <NButton
+                            v-if="canEditMessages"
+                            @click="handleAddMessage"
+                            :size="buttonSize"
+                            type="primary"
+                            dashed
+                            data-testid="pro-multi-add-first-message"
+                        >
+                            {{ t("conversation.addFirst") }}
+                        </NButton>
                 </template>
             </NEmpty>
 
@@ -234,12 +119,18 @@
                         :key="`message-${index}`"
                         style="padding: 0"
                     >
-                        <NCard
-                            :size="cardSize"
-                            embedded
-                            :bordered="false"
-                            content-style="padding: 0;"
-                        >
+                            <NCard
+                                :size="cardSize"
+                                embedded
+                                :bordered="false"
+                                content-style="padding: 0;"
+                                :data-testid="`pro-multi-message-card-${index}`"
+                                :data-message-id="message.id"
+                                :class="{
+                                    'message-card': true,
+                                    'message-card-selected': enableMessageOptimization && message.id === selectedMessageId,
+                                }"
+                            >
                             <div class="cm-row">
                                 <!-- 角色标签（小号，单行布局） -->
                                 <NSpace align="center" :size="4" class="left">
@@ -272,38 +163,70 @@
                                     </NDropdown>
                                 </NSpace>
 
-                                <!-- 内容输入，单行自增高 -->
+                                <!-- 内容输入 -->
                                 <div class="content">
-                                    <NInput
+                                    <VariableAwareInput
                                         v-if="canEditMessages"
-                                        :value="message.content"
-                                        @update:value="
-                                            (value) =>
-                                                handleMessageUpdate(index, {
-                                                    ...message,
-                                                    content: value,
-                                                })
-                                        "
-                                        type="textarea"
-                                        :placeholder="
-                                            t(
-                                                `conversation.placeholders.${message.role}`,
-                                            )
-                                        "
-                                        :autosize="{ minRows: 1, maxRows: 1 }"
-                                        :resizable="false"
-                                        :size="inputSize"
-                                        :style="{ width: '100%' }"
+                                        :model-value="message.content"
+                                        @update:model-value="(value) => handleMessageUpdate(index, { ...message, content: value })"
+                                        :placeholder="t(`conversation.placeholders.${message.role}`)"
+                                        :autosize="{ minRows: 1, maxRows: 10 }"
+                                        :existing-global-variables="Object.keys(props.availableVariables || {})"
+                                        :existing-temporary-variables="Object.keys(props.temporaryVariables || {})"
+                                        :predefined-variables="[...PREDEFINED_VARIABLES]"
+                                        :global-variable-values="props.availableVariables || {}"
+                                        :temporary-variable-values="props.temporaryVariables || {}"
+                                        :predefined-variable-values="{}"
+                                        @variable-extracted="handleVariableExtracted"
+                                        @add-missing-variable="handleAddMissingVariable"
                                     />
-                                    <NText v-else>{{ message.content }}</NText>
+                                    <!-- 只读模式下显示纯文本 -->
+                                    <NText v-if="!canEditMessages">{{ message.content }}</NText>
                                 </div>
 
-                                <!-- 操作按钮（上/下/删） -->
+                                <!-- 操作按钮（选择/上/下/删） -->
                                 <NSpace
                                     v-if="canEditMessages"
                                     :size="4"
                                     class="actions"
                                 >
+                                    <!-- 🆕 选择按钮（仅在启用消息优化且消息可优化时显示） -->
+                                    <NButton
+                                        v-if="enableMessageOptimization && canOptimizeMessage(message)"
+                                        @click.stop="handleMessageClick(message)"
+                                        :size="buttonSize"
+                                        :type="message.id === selectedMessageId ? 'primary' : 'default'"
+                                        quaternary
+                                        circle
+                                        :title="message.id === selectedMessageId ? t('conversation.selected') : t('conversation.selectForOptimization')"
+                                        :data-testid="`pro-multi-select-message-${index}`"
+                                    >
+                                        <template #icon>
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                            >
+                                                <path
+                                                    v-if="message.id === selectedMessageId"
+                                                    stroke-linecap="round"
+                                                    stroke-linejoin="round"
+                                                    stroke-width="2"
+                                                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                                                />
+                                                <circle
+                                                    v-else
+                                                    cx="12"
+                                                    cy="12"
+                                                    r="9"
+                                                    stroke-width="2"
+                                                />
+                                            </svg>
+                                        </template>
+                                    </NButton>
+
                                     <NButton
                                         v-if="index > 0"
                                         @click="handleMoveMessage(index, -1)"
@@ -399,6 +322,7 @@
                                 dashed
                                 type="primary"
                                 block
+                                data-testid="pro-multi-add-message"
                             >
                                 <template #icon>
                                     <svg
@@ -427,7 +351,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, h } from 'vue'
+import { ref, computed, watch, h, onMounted } from 'vue'
+import { v4 as uuidv4 } from 'uuid'
 
 import { useI18n } from "vue-i18n";
 import {
@@ -440,24 +365,26 @@ import {
     NScrollbar,
     NList,
     NListItem,
-    NInput,
     NDropdown,
 } from "naive-ui";
 import { usePerformanceMonitor } from "../../composables/performance/usePerformanceMonitor";
 import { useDebounceThrottle } from '../../composables/performance/useDebounceThrottle';
+import { useToast } from "../../composables/ui/useToast";
+import { VariableAwareInput } from "../variable-extraction";
+import { PREDEFINED_VARIABLES } from "../../types/variable";
 import type {
     ConversationManagerProps,
-    ConversationManagerEvents,
 } from "../../types/components";
 import type { ConversationMessage } from "@prompt-optimizer/core";
 
 const { t } = useI18n();
+const toast = useToast();
 
 // 性能监控
 const { recordUpdate } = usePerformanceMonitor("ConversationManager");
 
 // 防抖节流
-const { debounce, batchExecute } = useDebounceThrottle();
+const { batchExecute } = useDebounceThrottle();
 
 // Props 和 Events
 const props = withDefaults(defineProps<ConversationManagerProps>(), {
@@ -470,13 +397,30 @@ const props = withDefaults(defineProps<ConversationManagerProps>(), {
     title: undefined,
     toolCount: 0,
     optimizationMode: "system",
-    contextMode: "system",
     scanVariables: () => [],
     replaceVariables: (content: string) => content,
     isPredefinedVariable: () => false,
+    // 🆕 临时变量
+    temporaryVariables: () => ({}),
+    // 🆕 消息优化相关
+    selectedMessageId: undefined,
+    enableMessageOptimization: false,
+    isMessageOptimizing: false,
+    // 🆕 工具管理相关
+    enableToolManagement: true,
 });
 
-const emit = defineEmits<ConversationManagerEvents>();
+const emit = defineEmits<{
+    (e: "update:messages", messages: ConversationMessage[]): void;
+    (e: "messageChange", index: number, message: ConversationMessage, action: "add" | "update" | "delete"): void;
+    (e: "messageReorder", fromIndex: number, toIndex: number): void;
+    (e: "openContextEditor", messages: ConversationMessage[], variables: Record<string, string>): void;
+    (e: "open-tool-manager"): void;
+    (e: "variable-extracted", data: { variableName: string; variableValue: string; variableType: "global" | "temporary" }): void;
+    (e: "add-missing-variable", name: string): void;
+    (e: "messageSelect", message: ConversationMessage): void;
+    (e: "ready"): void;
+}>();
 
 // 状态管理 - 使用 shallowRef 优化大数据渲染
 const loading = ref(false);
@@ -516,15 +460,6 @@ const cardSize = computed(() => {
     return sizeMap[props.size] || "small";
 });
 
-const inputSize = computed(() => {
-    const sizeMap = {
-        small: "small",
-        medium: "medium",
-        large: "large",
-    } as const;
-    return sizeMap[props.size] || "medium";
-});
-
 const contentStyle = computed(() => {
     const style: Record<string, string | number> = {};
     if (props.maxHeight && !isCollapsed.value) {
@@ -540,13 +475,11 @@ const scrollbarStyle = computed(() => {
     return {};
 });
 
-// 模式化行为：用户模式隐藏消息增删改按钮，系统模式保留完整能力
+// 消息编辑权限控制
 const canEditMessages = computed(() => {
     // readonly优先级最高
     if (props.readonly) return false;
-    // 用户模式不允许编辑消息
-    if (props.contextMode === "user") return false;
-    // 系统模式允许编辑
+    // 允许编辑
     return true;
 });
 
@@ -563,9 +496,10 @@ const allUsedVariables = computed(() => {
 });
 
 const allMissingVariables = computed(() => {
-    const available = props.availableVariables || {};
+    const globalVars = props.availableVariables || {};
+    const tempVars = props.temporaryVariables || {};
     return allUsedVariables.value.filter(
-        (name) => available[name] === undefined,
+        (name) => globalVars[name] === undefined && tempVars[name] === undefined,
     );
 });
 
@@ -692,21 +626,14 @@ const getRoleTagType = (role: ConversationMessage["role"]) => {
 
 // 动态autosize配置（轻量化版本）
 
-const toggleCollapse = () => {
-    isCollapsed.value = !isCollapsed.value;
+// 消息处理方法 - 移除防抖以确保输入显示同步
+const handleMessageUpdate = (index: number, message: ConversationMessage) => {
+    const newMessages = [...props.messages];
+    newMessages[index] = message;
+    emit("update:messages", newMessages);
+    emit("messageChange", index, message, "update");
+    recordUpdate();
 };
-
-// 消息处理方法 - 优化防抖时间平衡响应性和性能
-const handleMessageUpdate = debounce(
-    (index: number, message: ConversationMessage) => {
-        const newMessages = [...props.messages];
-        newMessages[index] = message;
-        emit("update:messages", newMessages);
-        emit("messageChange", index, message, "update");
-        recordUpdate();
-    },
-    150,
-); // 降低到150ms，平衡用户体验和性能
 
 const handleMoveMessage = (fromIndex: number, direction: number) => {
     const toIndex = fromIndex + direction;
@@ -733,8 +660,10 @@ const handleAddMessage = () => {
 
 const handleAddMessageWithRole = (role: ConversationMessage["role"]) => {
     const newMessage: ConversationMessage = {
+        id: uuidv4(), // 🆕 自动生成唯一 ID
         role,
         content: "",
+        originalContent: "", // 🆕 保存原始内容
     };
 
     const newMessages = [...props.messages, newMessage];
@@ -757,6 +686,74 @@ const handleRoleSelect = (index: number, role: ConversationMessage["role"]) => {
     emit("messageChange", index, updated, "update");
 };
 
+// 处理变量提取
+// 注意：只 emit 事件，由父组件处理保存和显示 toast（参考 ContextEditor 的实现）
+const handleVariableExtracted = (data: {
+  variableName: string;
+  variableValue: string;
+  variableType: "global" | "temporary";
+}) => {
+  emit('variable-extracted', data);
+};
+
+// 处理添加缺失变量
+const handleAddMissingVariable = (varName: string) => {
+  emit('add-missing-variable', varName);
+};
+
+// 🆕 消息优化功能
+// 判断消息是否可以被优化（只有 user 和 system 角色可优化）
+const canOptimizeMessage = (message: ConversationMessage): boolean => {
+    return message.role === 'user' || message.role === 'system';
+};
+
+// 处理消息点击（用于选择要优化的消息）
+const handleMessageClick = (message: ConversationMessage) => {
+    // 如果未启用消息优化功能，直接返回
+    if (!props.enableMessageOptimization) return;
+
+    // 只有可优化的消息才能被选中
+    if (!canOptimizeMessage(message)) {
+        toast.warning(
+            t("toast.warning.cannotOptimizeRole", {
+                role: t(`conversation.roles.${message.role}`),
+            }),
+        );
+        return;
+    }
+
+    // 触发消息选择事件
+    // 父组件应该监听此事件并调用 useConversationOptimization 的 selectMessage 方法
+    emit('messageSelect', message);
+};
+
+// 初始化：为现有消息补全 id 和 originalContent 字段
+onMounted(() => {
+    let needsUpdate = false;
+    const updatedMessages = props.messages.map(msg => {
+        const updated = { ...msg };
+
+        // 补全缺失的 id
+        if (!updated.id) {
+            updated.id = uuidv4();
+            needsUpdate = true;
+        }
+
+        // 补全缺失的 originalContent
+        if (updated.originalContent === undefined) {
+            updated.originalContent = updated.content;
+            needsUpdate = true;
+        }
+
+        return updated;
+    });
+
+    // 如果有更新，emit 新的消息数组
+    if (needsUpdate) {
+        emit("update:messages", updatedMessages);
+    }
+});
+
 // 生命周期 - 使用批处理优化
 watch(
     () => props.messages,
@@ -777,10 +774,9 @@ watch(
 
 .cm-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;  /* 改为顶部对齐 */
     gap: 8px;
     flex-wrap: nowrap;
-    white-space: nowrap;
 }
 
 .cm-row .actions {
@@ -804,5 +800,66 @@ watch(
 .cm-row .content {
     flex: 1 1 auto;
     min-width: 0;
+}
+
+/* VariableAwareInput 样式适配 */
+.cm-row .content :deep(.variable-aware-input-wrapper) {
+    width: 100%;
+}
+
+.cm-row .content :deep(.codemirror-container) {
+    border: 1px solid var(--n-border-color);
+    border-radius: var(--n-border-radius);
+    transition: border-color 0.3s;
+}
+
+.cm-row .content :deep(.codemirror-container:hover) {
+    border-color: var(--n-border-color-hover);
+}
+
+.cm-row .content :deep(.codemirror-container:focus-within) {
+    border-color: var(--n-primary-color);
+    box-shadow: 0 0 0 2px var(--n-primary-color-suppl);
+}
+
+/* CodeMirror 高度控制 */
+.cm-row .content :deep(.cm-scroller) {
+    min-height: 1.5em;
+    max-height: 15em;  /* 约 10 行 */
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .cm-row {
+        gap: 4px;
+    }
+
+    .cm-row .content :deep(.cm-scroller) {
+        max-height: 12em;
+    }
+}
+
+/* 🆕 消息优化功能样式 */
+.message-card {
+    transition: all 0.2s ease;
+}
+
+.message-card-selectable {
+    cursor: pointer;
+}
+
+.message-card-selectable:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    transform: translateY(-1px);
+}
+
+.message-card-selected {
+    box-shadow: 0 0 0 2px var(--n-color-target) !important;
+    background-color: var(--n-color-target-hover, rgba(24, 160, 88, 0.08));
+}
+
+.message-card-not-optimizable {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 </style>

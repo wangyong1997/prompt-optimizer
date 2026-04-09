@@ -3,13 +3,11 @@
  * 负责管理优化上下文、上下文变量、上下文编辑器等相关功能
  */
 
-import { ref, computed, watch, type Ref } from 'vue'
+import { ref, computed, watch, type Ref, type ComputedRef } from 'vue'
 
 import { useToast } from "../ui/useToast";
-import { quickTemplateManager } from "../../data/quickTemplates";
 import type {
   ConversationMessage,
-  OptimizationMode,
   ToolDefinition,
   ContextEditorState as CoreContextEditorState,
 } from "@prompt-optimizer/core";
@@ -18,7 +16,7 @@ import type { VariableManagerHooks } from "../prompt/useVariableManager";
 
 export interface ContextManagementOptions {
   services: Ref<AppServices | null>;
-  selectedOptimizationMode: Ref<OptimizationMode>;
+  // ✅ 已移除 selectedOptimizationMode - 函数内部未使用，可从 route-computed 动态计算
   advancedModeEnabled: Ref<boolean>;
   showContextEditor: Ref<boolean>;
   contextEditorDefaultTab: Ref<"messages" | "variables" | "tools">;
@@ -30,7 +28,6 @@ export interface ContextManagementOptions {
 export function useContextManagement(options: ContextManagementOptions) {
   const {
     services,
-    selectedOptimizationMode,
     advancedModeEnabled,
     showContextEditor,
     contextEditorDefaultTab,
@@ -75,7 +72,11 @@ export function useContextManagement(options: ContextManagementOptions) {
 
   // 监听 services 中的 contextMode 变化并同步到本地 ref
   watch(
-    () => services.value?.contextMode.value,
+    () => {
+      const cm = services.value?.contextMode
+      if (!cm) return undefined
+      return typeof cm === 'string' ? cm : cm.value
+    },
     (newMode) => {
       if (newMode !== undefined) {
         contextMode.value = newMode;
@@ -129,7 +130,7 @@ export function useContextManagement(options: ContextManagementOptions) {
   let persistContextUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   const persistContextUpdate = async (patch: {
     messages?: ConversationMessage[];
-    // variables 已移除 - 临时变量由 useTemporaryVariables() 全局管理，不持久化
+    // variables 已移除 - 临时变量由 useTemporaryVariables() 管理：Pro/Image 持久化到 session，Basic 仅内存态
     tools?: ToolDefinition[];
   }) => {
     if (!contextRepo.value || !currentContextId.value) return;
@@ -195,31 +196,6 @@ export function useContextManagement(options: ContextManagementOptions) {
       );
     }
 
-    // 若首次加载且高级模式开启且当前无会话消息，灌入默认模板
-    if (
-      advancedModeEnabled.value &&
-      !isContextLoaded.value &&
-      (!optimizationContext.value || optimizationContext.value.length === 0)
-    ) {
-      try {
-        const defaultTemplate = quickTemplateManager.getTemplate(
-          selectedOptimizationMode.value,
-          "default",
-        );
-        if (defaultTemplate?.messages?.length) {
-          optimizationContext.value = [...defaultTemplate.messages];
-          console.log(
-            `[useContextManagement] Auto-filled default template for ${selectedOptimizationMode.value}`,
-          );
-        }
-      } catch (e) {
-        console.warn(
-          "[useContextManagement] Failed to auto-fill default template:",
-          e,
-        );
-      }
-    }
-
     // 设置初始状态
     contextEditorState.value = {
       messages: messages || [...optimizationContext.value],
@@ -242,7 +218,7 @@ export function useContextManagement(options: ContextManagementOptions) {
     optimizationContext.value = [...context.messages];
     optimizationContextTools.value = [...context.tools];
 
-    // 持久化到contextRepo（不包含临时变量）
+    // 持久化到 contextRepo（不包含临时变量；临时变量走 session store / 内存态）
     await persistContextUpdate({
       messages: context.messages,
       // variables 不持久化 - 临时变量由 useTemporaryVariables() 管理
@@ -265,7 +241,7 @@ export function useContextManagement(options: ContextManagementOptions) {
     // 实时同步状态到contextEditorState（不包含 variables）
     contextEditorState.value.messages = [...state.messages];
     contextEditorState.value.tools = [...state.tools];
-    // variables 不同步 - 临时变量由 useTemporaryVariables() 全局管理
+    // variables 不同步 - 临时变量由 useTemporaryVariables() 管理
 
     // 实时更新优化上下文
     optimizationContext.value = [...state.messages];

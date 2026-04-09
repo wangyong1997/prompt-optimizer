@@ -1,10 +1,11 @@
 import { IHistoryManager, PromptRecord, PromptRecordChain } from './types';
 import { IStorageProvider } from '../storage/types';
 import { StorageAdapter } from '../storage/adapter';
-import { RecordNotFoundError, RecordValidationError, StorageError, HistoryError } from './errors';
+import { RecordNotFoundError, RecordValidationError, HistoryStorageError, HistoryError } from './errors';
 import { v4 as uuidv4 } from 'uuid';
 import { IModelManager } from '../model/types';
 import { CORE_SERVICE_KEYS } from '../../constants/storage-keys';
+import { HISTORY_ERROR_CODES, IMPORT_EXPORT_ERROR_CODES } from '../../constants/error-codes';
 import { ImportExportError } from '../../interfaces/import-export';
 
 /**
@@ -59,7 +60,11 @@ export class HistoryManager implements IHistoryManager {
           
           // Ensure record ID is unique
           if (records.some((r: PromptRecord) => r.id === record.id)) {
-            throw new HistoryError(`Record with ID ${record.id} already exists`);
+            throw new HistoryError(
+              HISTORY_ERROR_CODES.VALIDATION_ERROR,
+              { details: `Record with ID ${record.id} already exists` },
+              `Record with ID ${record.id} already exists`
+            );
           }
           
           // Add record to existing records (at the beginning)
@@ -74,9 +79,9 @@ export class HistoryManager implements IHistoryManager {
         throw err;
       }
       if (err.message?.includes('Get')) {
-        throw new StorageError('Failed to get history records', 'read');
+        throw new HistoryStorageError('Failed to get history records', 'read');
       } else {
-        throw new StorageError('Failed to save history records', 'write');
+        throw new HistoryStorageError('Failed to save history records', 'write');
       }
     }
   }
@@ -95,7 +100,7 @@ export class HistoryManager implements IHistoryManager {
       // 直接返回记录，排序逻辑由调用者根据需求处理
       return records;
     } catch (err) {
-      throw new StorageError('Failed to get history records', 'read');
+      throw new HistoryStorageError('Failed to get history records', 'read');
     }
   }
 
@@ -134,7 +139,7 @@ export class HistoryManager implements IHistoryManager {
       if (err instanceof RecordNotFoundError) {
         throw err;
       }
-      throw new StorageError('Failed to delete record', 'delete');
+      throw new HistoryStorageError('Failed to delete record', 'delete');
     }
   }
 
@@ -166,7 +171,7 @@ export class HistoryManager implements IHistoryManager {
     try {
       await this.storage.removeItem(this.storageKey);
     } catch (err) {
-      throw new StorageError('Failed to clear history', 'delete');
+      throw new HistoryStorageError('Failed to clear history', 'delete');
     }
   }
 
@@ -206,7 +211,7 @@ export class HistoryManager implements IHistoryManager {
     // Generate chain ID
     const chainId = uuidv4();
     
-    // Create record with chainId and version=1
+    // Create record with chainId and initial version
     const record: PromptRecord = {
       ...params,
       chainId,
@@ -287,7 +292,11 @@ export class HistoryManager implements IHistoryManager {
       // Get root record (version 1)
       const rootRecord = sortedRecords.find(r => r.version === 1);
       if (!rootRecord) {
-        throw new HistoryError(`Chain ${chainId} has no root record (version 1)`);
+        throw new HistoryError(
+          HISTORY_ERROR_CODES.CHAIN_ERROR,
+          { details: `Chain ${chainId} has no root record (version 1)` },
+          `Chain ${chainId} has no root record (version 1)`
+        );
       }
       
       // Get current record (highest version)
@@ -303,7 +312,7 @@ export class HistoryManager implements IHistoryManager {
       if (err instanceof RecordNotFoundError || err instanceof HistoryError) {
         throw err;
       }
-      throw new StorageError('Failed to get chain', 'read');
+      throw new HistoryStorageError('Failed to get chain', 'read');
     }
   }
 
@@ -379,7 +388,8 @@ export class HistoryManager implements IHistoryManager {
       throw new ImportExportError(
         'Failed to export history data',
         await this.getDataType(),
-        error as Error
+        error as Error,
+        IMPORT_EXPORT_ERROR_CODES.EXPORT_FAILED,
       );
     }
   }
@@ -389,7 +399,10 @@ export class HistoryManager implements IHistoryManager {
    */
   async importData(data: any): Promise<void> {
     if (!(await this.validateData(data))) {
-      throw new Error('Invalid history data format: data must be an array of prompt records');
+      throw new RecordValidationError(
+        'Invalid history data format: data must be an array of prompt records',
+        [],
+      );
     }
 
     const records = data as PromptRecord[];

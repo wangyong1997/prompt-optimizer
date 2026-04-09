@@ -1,11 +1,13 @@
 import {
   IPromptService,
   OptimizationRequest,
+  MessageOptimizationRequest,
   StreamHandlers,
   CustomConversationRequest,
 } from './types';
 import { PromptRecord } from '../history/types';
 import { safeSerializeForIPC } from '../../utils/ipc-serialization';
+import { ServiceDependencyError } from './errors';
 
 // Helper function to check if running in Electron renderer process
 function isRunningInElectron(): boolean {
@@ -21,7 +23,7 @@ export class ElectronPromptServiceProxy implements IPromptService {
     if (!isRunningInElectron() || !(window as any).electronAPI?.prompt) {
       // The `prompt` property will be added to the electronAPI in the desktop package's preload script.
       // This error indicates a potential mismatch between frontend expectations and the preload script's exposure.
-      throw new Error('Electron Prompt API is not available in this environment.');
+      throw new ServiceDependencyError('ElectronPromptAPI', 'Electron Prompt API is not available in this environment.');
     }
     return (window as any).electronAPI.prompt;
   }
@@ -32,14 +34,27 @@ export class ElectronPromptServiceProxy implements IPromptService {
     return this.api.optimizePrompt(safeRequest);
   }
 
+  async optimizeMessage(request: MessageOptimizationRequest): Promise<string> {
+    // 自动序列化，防止Vue响应式对象IPC传递错误
+    const safeRequest = safeSerializeForIPC(request);
+    return this.api.optimizeMessage(safeRequest);
+  }
+
   async iteratePrompt(
     originalPrompt: string,
     lastOptimizedPrompt: string,
     iterateInput: string,
     modelKey: string,
-    templateId?: string
+    templateId?: string,
+    contextData?: {
+      messages?: any[];
+      selectedMessageId?: string;
+      variables?: Record<string, string>;
+      tools?: any[];
+    }
   ): Promise<string> {
-    return this.api.iteratePrompt(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId);
+    const safeContextData = contextData ? safeSerializeForIPC(contextData) : undefined;
+    return this.api.iteratePrompt(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, safeContextData);
   }
 
   async testPrompt(
@@ -66,15 +81,28 @@ export class ElectronPromptServiceProxy implements IPromptService {
     await this.api.optimizePromptStream(safeRequest, callbacks);
   }
 
+  async optimizeMessageStream(request: MessageOptimizationRequest, callbacks: StreamHandlers): Promise<void> {
+    // 自动序列化，防止Vue响应式对象IPC传递错误
+    const safeRequest = safeSerializeForIPC(request);
+    await this.api.optimizeMessageStream(safeRequest, callbacks);
+  }
+
   async iteratePromptStream(
     originalPrompt: string,
     lastOptimizedPrompt: string,
     iterateInput: string,
     modelKey: string,
     callbacks: StreamHandlers,
-    templateId?: string
+    templateId?: string,
+    contextData?: {
+      messages?: any[];
+      selectedMessageId?: string;
+      variables?: Record<string, string>;
+      tools?: any[];
+    }
   ): Promise<void> {
-    await this.api.iteratePromptStream(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, callbacks);
+    const safeContextData = contextData ? safeSerializeForIPC(contextData) : undefined;
+    await this.api.iteratePromptStream(originalPrompt, lastOptimizedPrompt, iterateInput, modelKey, templateId, callbacks, safeContextData);
   }
 
   async testPromptStream(

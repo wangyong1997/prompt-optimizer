@@ -1,14 +1,22 @@
-import { describe, test, expect, vi, beforeEach } from 'vitest'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
 import { SeedreamImageAdapter } from '../../../src/services/image/adapters/seedream'
 import type { ImageRequest, ImageModelConfig } from '../../../src/services/image/types'
+import { IMAGE_ERROR_CODES } from '../../../src/constants/error-codes'
 
 const RUN_REAL_API = process.env.RUN_REAL_API === '1'
 
 describe('SeedreamImageAdapter', () => {
   let adapter: SeedreamImageAdapter
+  let modelId: string
+  const realFetch = global.fetch
 
   beforeEach(() => {
     adapter = new SeedreamImageAdapter()
+    modelId = adapter.getModels()[0].id
+  })
+
+  afterEach(() => {
+    global.fetch = realFetch
   })
 
   describe('Provider Information', () => {
@@ -47,6 +55,13 @@ describe('SeedreamImageAdapter', () => {
       })
     })
 
+    test('should declare multi-image capability for Seedream 4.0', () => {
+      const model = adapter.getModels()[0]
+
+      expect(model.capabilities.image2image).toBe(true)
+      expect(model.capabilities.multiImage).toBe(true)
+    })
+
     test('should include watermark and size parameters', () => {
       const models = adapter.getModels()
       const model = models[0]
@@ -73,7 +88,7 @@ describe('SeedreamImageAdapter', () => {
         id: 'test-seedream-config',
         name: 'Test Seedream Config',
         providerId: 'seedream',
-        modelId: 'doubao-seedream-4-0-250828',
+        modelId,
         enabled: true,
         connectionConfig: {
           apiKey: 'test-api-key',
@@ -127,7 +142,7 @@ describe('SeedreamImageAdapter', () => {
         id: 'test-config',
         name: 'Test Config',
         providerId: 'seedream',
-        modelId: 'doubao-seedream-4-0-250828',
+        modelId,
         enabled: true,
         connectionConfig: {
           apiKey: 'test-api-key'
@@ -158,7 +173,7 @@ describe('SeedreamImageAdapter', () => {
         id: 'test-config',
         name: 'Test Config',
         providerId: 'seedream',
-        modelId: 'doubao-seedream-4-0-250828',
+        modelId,
         enabled: true,
         connectionConfig: {
           // Missing apiKey
@@ -173,7 +188,7 @@ describe('SeedreamImageAdapter', () => {
       }
 
       await expect(adapter.generate(request, config))
-        .rejects.toThrow(/requires API key/i)
+        .rejects.toMatchObject({ code: IMAGE_ERROR_CODES.API_KEY_REQUIRED })
     })
 
     test('should handle Chinese prompts correctly', async () => {
@@ -181,7 +196,7 @@ describe('SeedreamImageAdapter', () => {
         id: 'chinese-test-config',
         name: 'Chinese Test Config',
         providerId: 'seedream',
-        modelId: 'doubao-seedream-4-0-250828',
+        modelId,
         enabled: true,
         connectionConfig: {
           apiKey: 'test-api-key'
@@ -218,6 +233,90 @@ describe('SeedreamImageAdapter', () => {
           body: expect.stringContaining('古代中国山水画')
         })
       )
+    })
+
+    test('should send multiple reference images as an image array', async () => {
+      const config: ImageModelConfig = {
+        id: 'multi-seedream-config',
+        name: 'Multi Seedream Config',
+        providerId: 'seedream',
+        modelId,
+        enabled: true,
+        connectionConfig: {
+          apiKey: 'test-api-key',
+          baseURL: 'https://ark.cn-beijing.volces.com/api/v3'
+        },
+        paramOverrides: {}
+      }
+
+      const request: ImageRequest = {
+        prompt: '将两张参考图融合成一张统一画面',
+        configId: config.id,
+        count: 1,
+        inputImages: [
+          { b64: 'AAAA', mimeType: 'image/png' },
+          { b64: 'BBBB', mimeType: 'image/jpeg' }
+        ]
+      }
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          code: 0,
+          data: [{ url: 'https://example.com/multi-image.png' }]
+        })
+      })
+
+      await adapter.generate(request, config)
+
+      expect(fetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.stringContaining('"image":["data:image/png;base64,AAAA","data:image/jpeg;base64,BBBB"]')
+        })
+      )
+    })
+
+    test('should force response_format to b64_json even when stored overrides request url output', async () => {
+      const config: ImageModelConfig = {
+        id: 'seedream-b64-config',
+        name: 'Seedream B64 Config',
+        providerId: 'seedream',
+        modelId,
+        enabled: true,
+        connectionConfig: {
+          apiKey: 'test-api-key',
+          baseURL: 'https://ark.cn-beijing.volces.com/api/v3'
+        },
+        paramOverrides: {
+          response_format: 'url',
+          size: '2K'
+        }
+      }
+
+      const request: ImageRequest = {
+        prompt: '返回 base64 结果',
+        configId: config.id,
+        count: 1,
+        paramOverrides: {
+          response_format: 'url'
+        }
+      }
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          code: 0,
+          data: [{ b64_json: 'aGVsbG8=' }]
+        })
+      })
+
+      await adapter.generate(request, config)
+
+      const [, init] = vi.mocked(fetch).mock.calls[0]!
+      const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>
+
+      expect(body.response_format).toBe('b64_json')
     })
   })
 
@@ -263,7 +362,6 @@ describe('SeedreamImageAdapter', () => {
     test('should perform real API call when API key is provided', async () => {
       const apiKey = process.env.VITE_SEEDREAM_API_KEY || process.env.VITE_ARK_API_KEY
       if (!apiKey) {
-        console.log('跳过 Seedream 真实 API 测试：未设置 VITE_SEEDREAM_API_KEY 或 VITE_ARK_API_KEY')
         return
       }
 
@@ -271,7 +369,7 @@ describe('SeedreamImageAdapter', () => {
         id: 'real-seedream-test',
         name: 'Real Seedream Test',
         providerId: 'seedream',
-        modelId: 'doubao-seedream-4-0-250828',
+        modelId,
         enabled: true,
         connectionConfig: {
           apiKey: apiKey,
@@ -289,24 +387,13 @@ describe('SeedreamImageAdapter', () => {
         count: 1
       }
 
-      const startTime = Date.now()
       const result = await adapter.generate(request, config)
-      const endTime = Date.now()
-      const duration = ((endTime - startTime) / 1000).toFixed(1)
-
-      console.log(`Seedream 真实API生成耗时: ${duration}秒`)
 
       expect(result).toBeDefined()
       expect(result.images).toHaveLength(1)
-      expect(result.images[0].url).toBeTruthy()
-      expect(result.metadata?.created).toBeGreaterThan(0)
-
-      // 验证图像 URL 可访问性
-      if (result.images[0].url) {
-        const response = await fetch(result.images[0].url, { method: 'HEAD' })
-        expect(response.ok).toBe(true)
-        console.log('生成的图像 URL 可访问，状态码:', response.status)
-      }
+      expect(result.images[0].b64).toBeTruthy()
+      expect(result.images[0].mimeType).toBe('image/png')
+      expect(result.images[0].url).toBeFalsy()
     }, 45000) // 45秒超时
   })
 })

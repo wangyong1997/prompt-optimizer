@@ -1,20 +1,17 @@
 /**
  * 模型基础错误
  */
-export class ModelError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ModelError';
-  }
-}
+import { MODEL_ERROR_CODES, type ErrorParams } from '../../constants/error-codes'
 
-/**
- * 模型配置错误
- */
-export class ModelConfigError extends ModelError {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ModelConfigError';
+export class ModelError extends Error {
+  public readonly code: string
+  public readonly params?: ErrorParams
+
+  constructor(code: string, message?: string, params?: ErrorParams) {
+    super(message ? `[${code}] ${message}` : `[${code}]`)
+    this.name = 'ModelError'
+    this.code = code
+    this.params = params ?? (message ? { details: message } : undefined)
   }
 }
 
@@ -23,10 +20,12 @@ export class ModelConfigError extends ModelError {
  */
 export class ModelValidationError extends ModelError {
   constructor(
-    message: string,
-    public errors: string[]
+    details: string,
+    public errors: string[],
   ) {
-    super(message);
-    this.name = 'ModelValidationError';
+    super(MODEL_ERROR_CODES.VALIDATION_ERROR, details, { details })
+    this.name = 'ModelValidationError'
   }
-} 
+}
+
+// 注意: ModelConfigError 已移至 llm/errors.ts，避免重复定义 

@@ -5,6 +5,7 @@ import type {
   TextModel,
   TextModelConfig,
   Message,
+  ImageUnderstandingRequest,
   LLMResponse,
   StreamHandlers,
   ParameterDefinition,
@@ -18,6 +19,50 @@ type GenerateContentConfig = any
 type FunctionDeclaration = any
 type Tool = any
 type FunctionCall = any
+
+interface ModelOverride {
+  id: string
+  name: string
+  description: string
+  capabilities?: Partial<TextModel['capabilities']>
+  defaultParameterValues?: Record<string, unknown>
+}
+
+/**
+ * Gemini 静态模型定义
+ */
+const GEMINI_STATIC_MODELS: ModelOverride[] = [
+  {
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
+    description: 'Latest Gemini 2.5 Flash model, fast and efficient',
+    capabilities: {
+      supportsTools: true,
+      supportsReasoning: false,
+      maxContextLength: 1000000
+    }
+  },
+  {
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
+    description: 'Gemini 2.5 Pro model with enhanced reasoning capabilities',
+    capabilities: {
+      supportsTools: true,
+      supportsReasoning: true,
+      maxContextLength: 1000000
+    }
+  },
+  {
+    id: 'gemini-3-pro-preview',
+    name: 'Gemini 3 Pro Preview',
+    description: 'Preview version of Gemini 3 Pro with cutting-edge capabilities',
+    capabilities: {
+      supportsTools: true,
+      supportsReasoning: true,
+      maxContextLength: 1000000
+    }
+  }
+]
 
 /**
  * Google Gemini适配器实现
@@ -47,6 +92,7 @@ export class GeminiAdapter extends AbstractTextProviderAdapter {
       requiresApiKey: true,
       defaultBaseURL: 'https://generativelanguage.googleapis.com',
       supportsDynamicModels: true, // 新版 SDK 支持动态模型获取
+      apiKeyUrl: 'https://aistudio.google.com/apikey',
       connectionSchema: {
         required: ['apiKey'],
         optional: ['baseURL'],
@@ -59,27 +105,28 @@ export class GeminiAdapter extends AbstractTextProviderAdapter {
   }
 
   /**
-   * 获取静态模型列表（Gemini 2.5系列）
-   * 从service.ts的fetchGeminiModelsInfo参考 (L1099-1106)
+   * 获取静态模型列表（Gemini 系列）
    */
   public getModels(): TextModel[] {
-    const providerId = 'gemini'
+    return GEMINI_STATIC_MODELS.map((definition) => {
+      const baseModel = this.buildDefaultModel(definition.id)
 
-    return [
-      {
-        id: 'gemini-2.5-flash',
-        name: 'Gemini 2.5 Flash',
-        description: 'Latest experimental Gemini 2.5 Flash model',
-        providerId,
+      return {
+        ...baseModel,
+        name: definition.name,
+        description: definition.description,
         capabilities: {
-          supportsTools: true,
-          supportsReasoning: false,
-          maxContextLength: 1000000
+          ...baseModel.capabilities,
+          ...(definition.capabilities ?? {})
         },
-        parameterDefinitions: this.getParameterDefinitions('gemini-2.5-flash'),
-        defaultParameterValues: this.getDefaultParameterValues('gemini-2.5-flash')
+        defaultParameterValues: definition.defaultParameterValues
+          ? {
+              ...(baseModel.defaultParameterValues ?? {}),
+              ...definition.defaultParameterValues
+            }
+          : baseModel.defaultParameterValues
       }
-    ]
+    })
   }
 
   /**
@@ -470,57 +517,190 @@ export class GeminiAdapter extends AbstractTextProviderAdapter {
         contents,
         config: generationConfig
       })
+      return this.extractResponsePayload(response, config.modelMeta.id)
+    } catch (error) {
+      console.error('[GeminiAdapter] API call failed:', error)
+      throw error // 保留原始错误堆栈
+    }
+  }
 
-      // 提取文本内容和思考内容
-      let textContent = ''
-      let reasoning: string | undefined
+  protected async doSendImageUnderstanding(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig
+  ): Promise<LLMResponse> {
+    try {
+      const client = this.createClient(config)
+      const mergedParams = {
+        ...(config.paramOverrides || {}),
+        ...(request.paramOverrides || {})
+      } as Record<string, unknown>
 
-      // 优先使用新版 SDK 推荐的 response.text 属性
-      if ((response as any).text) {
-        textContent = (response as any).text
-      } else if (response.candidates?.[0]?.content?.parts) {
-        // 回退到 parts 提取（用于旧版响应格式或特殊情况）
-        const contentParts: string[] = []
-        const reasoningParts: string[] = []
+      const generationConfig = this.buildGenerationConfig(
+        mergedParams,
+        request.systemPrompt
+      )
 
-        for (const part of response.candidates[0].content.parts) {
-          // 提取文本内容
-          if ((part as any).text) {
-            const text = (part as any).text
-            // 如果这部分是思考过程，加到 reasoning，否则加到 content
+      if (request.responseMimeType) {
+        ;(generationConfig as any).responseMimeType = request.responseMimeType
+      }
+
+      const contents: Content[] = [
+        {
+          role: 'user',
+          parts: [
+            { text: request.userPrompt },
+            ...request.images.map((image) => ({
+              inlineData: {
+                mimeType: image.mimeType || 'image/png',
+                data: image.b64
+              }
+            }))
+          ]
+        }
+      ]
+
+      const response = await client.models.generateContent({
+        model: config.modelMeta.id,
+        contents,
+        config: generationConfig
+      })
+
+      return this.extractResponsePayload(response, config.modelMeta.id)
+    } catch (error) {
+      console.error('[GeminiAdapter] Image understanding request failed:', error)
+      throw error
+    }
+  }
+
+  protected async doSendImageUnderstandingStream(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig,
+    callbacks: StreamHandlers
+  ): Promise<void> {
+    try {
+      const client = this.createClient(config)
+      const mergedParams = {
+        ...(config.paramOverrides || {}),
+        ...(request.paramOverrides || {})
+      } as Record<string, unknown>
+
+      const generationConfig = this.buildGenerationConfig(
+        mergedParams,
+        request.systemPrompt
+      )
+
+      if (request.responseMimeType) {
+        ;(generationConfig as any).responseMimeType = request.responseMimeType
+      }
+
+      const contents: Content[] = [
+        {
+          role: 'user',
+          parts: [
+            { text: request.userPrompt },
+            ...request.images.map((image) => ({
+              inlineData: {
+                mimeType: image.mimeType || 'image/png',
+                data: image.b64
+              }
+            }))
+          ]
+        }
+      ]
+
+      const responseStream = await client.models.generateContentStream({
+        model: config.modelMeta.id,
+        contents,
+        config: generationConfig
+      })
+
+      let accumulatedContent = ''
+      let accumulatedReasoning = ''
+
+      for await (const chunk of responseStream) {
+        let emittedContentToken = false
+
+        if (chunk.candidates?.[0]?.content?.parts) {
+          for (const part of chunk.candidates[0].content.parts) {
+            const partText = (part as any).text
+            if (!partText) {
+              continue
+            }
+
             if ((part as any).thought) {
-              reasoningParts.push(text)
+              accumulatedReasoning += partText
+              callbacks.onReasoningToken?.(partText)
             } else {
-              contentParts.push(text)
+              emittedContentToken = true
+              accumulatedContent += partText
+              callbacks.onToken(partText)
             }
           }
         }
 
-        textContent = contentParts.join('')
-        if (reasoningParts.length > 0) {
-          reasoning = reasoningParts.join('')
-        }
-      } else if (response.candidates?.[0]?.content) {
-        // 最后尝试直接访问 content 字段
-        const content = response.candidates[0].content
-        if (typeof content === 'string') {
-          textContent = content
-        } else if ((content as any).text) {
-          textContent = (content as any).text
+        const chunkText = (chunk as any).text
+        if (chunkText && !emittedContentToken) {
+          accumulatedContent += chunkText
+          callbacks.onToken(chunkText)
         }
       }
 
-      return {
-        content: textContent,
-        reasoning,
+      callbacks.onComplete({
+        content: accumulatedContent,
+        reasoning: accumulatedReasoning || undefined,
         metadata: {
-          model: config.modelMeta.id,
-          finishReason: response.candidates?.[0]?.finishReason
+          model: config.modelMeta.id
+        }
+      })
+    } catch (error) {
+      console.error('[GeminiAdapter] Image understanding stream failed:', error)
+      callbacks.onError(error instanceof Error ? error : new Error(String(error)))
+      throw error
+    }
+  }
+
+  private extractResponsePayload(response: any, modelId: string): LLMResponse {
+    let textContent = ''
+    let reasoning: string | undefined
+
+    // 优先使用新版 SDK 推荐的 response.text 属性
+    if ((response as any).text) {
+      textContent = (response as any).text
+    } else if (response.candidates?.[0]?.content?.parts) {
+      const contentParts: string[] = []
+      const reasoningParts: string[] = []
+
+      for (const part of response.candidates[0].content.parts) {
+        if ((part as any).text) {
+          const text = (part as any).text
+          if ((part as any).thought) {
+            reasoningParts.push(text)
+          } else {
+            contentParts.push(text)
+          }
         }
       }
-    } catch (error) {
-      console.error('[GeminiAdapter] API call failed:', error)
-      throw error // 保留原始错误堆栈
+
+      textContent = contentParts.join('')
+      if (reasoningParts.length > 0) {
+        reasoning = reasoningParts.join('')
+      }
+    } else if (response.candidates?.[0]?.content) {
+      const content = response.candidates[0].content
+      if (typeof content === 'string') {
+        textContent = content
+      } else if ((content as any).text) {
+        textContent = (content as any).text
+      }
+    }
+
+    return {
+      content: textContent,
+      reasoning,
+      metadata: {
+        model: modelId,
+        finishReason: response.candidates?.[0]?.finishReason
+      }
     }
   }
 

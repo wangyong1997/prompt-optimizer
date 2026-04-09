@@ -74,27 +74,69 @@ describe('TemplateProcessor (Simplified)', () => {
       });
     });
 
-    it('should throw error for simple template in iteration context', () => {
+    it('should expose helpers.toJson for safe JSON string injection', () => {
       const template: Template = {
-        id: 'test-iterate',
-        name: 'Test Iterate Template',
-        content: 'You are an expert prompt optimizer.',
+        id: 'test-helper-to-json',
+        name: 'Test Helper ToJson',
+        content: [
+          {
+            role: 'user',
+            content: '{"originalPrompt": {{#helpers.toJson}}{{{originalPrompt}}}{{/helpers.toJson}}}'
+          }
+        ],
         metadata: {
           version: '1.0',
           lastModified: Date.now(),
-          templateType: 'iterate'
+          templateType: 'optimize'
         }
       };
 
       const context: TemplateContext = {
-        originalPrompt: 'Write a story',
-        iterateInput: 'Make it more dramatic'
+        originalPrompt: 'Line 1\n"quoted"\n<xml>{{item}}</xml>'
       };
 
-      expect(() => {
-        TemplateProcessor.processTemplate(template, context);
-      }).toThrow('Iteration context requires advanced template (message array format) for variable substitution');
+      const result = TemplateProcessor.processTemplate(template, context);
+
+      expect(result[0]).toEqual({
+        role: 'user',
+        content: '{"originalPrompt": "Line 1\\n\\"quoted\\"\\n<xml>{{item}}</xml>"}'
+      });
     });
+
+    it('should not allow context to override built-in helpers namespace', () => {
+      const template: Template = {
+        id: 'test-helper-namespace',
+        name: 'Test Helper Namespace',
+        content: [
+          {
+            role: 'user',
+            content: '{{#helpers.toJson}}{{{originalPrompt}}}{{/helpers.toJson}}'
+          }
+        ],
+        metadata: {
+          version: '1.0',
+          lastModified: Date.now(),
+          templateType: 'optimize'
+        }
+      };
+
+      const context: TemplateContext = {
+        originalPrompt: 'override-check',
+        helpers: {
+          toJson: 'not-a-function'
+        }
+      };
+
+      const result = TemplateProcessor.processTemplate(template, context);
+
+      expect(result[0]).toEqual({
+        role: 'user',
+        content: '"override-check"'
+      });
+    });
+
+    // 注：TemplateProcessor 不再负责迭代上下文检查
+    // 该检查已移至 PromptService.iteratePrompt/iteratePromptStream 入口处
 
     it('should handle iteration context with advanced template', () => {
       const template: Template = {

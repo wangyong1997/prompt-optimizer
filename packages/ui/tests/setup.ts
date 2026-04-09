@@ -9,6 +9,7 @@ import { createI18n } from 'vue-i18n'
 import zhCN from '../src/i18n/locales/zh-CN'
 import zhTW from '../src/i18n/locales/zh-TW'
 import enUS from '../src/i18n/locales/en-US'
+import { setupErrorDetection } from './utils/error-detection'
 
 // 创建测试用的 i18n 实例
 const i18n = createI18n({
@@ -56,26 +57,62 @@ Object.assign(document, {
   execCommand: vi.fn().mockReturnValue(true)
 })
 
-// Mock window.getComputedStyle (sometimes needed for DOM tests)
+// Mock window.getComputedStyle (needed for Vue Transition and DOM tests)
+// Vue's Transition component needs transitionDelay, transitionDuration, etc.
+const mockComputedStyle = {
+  transitionDelay: '',
+  transitionDuration: '',
+  transitionProperty: '',
+  animationDelay: '',
+  animationDuration: '',
+  animationName: '',
+  display: 'block',
+  getPropertyValue: vi.fn().mockReturnValue('')
+}
 Object.assign(window, {
-  getComputedStyle: vi.fn().mockReturnValue({
-    getPropertyValue: vi.fn().mockReturnValue('')
-  })
+  getComputedStyle: vi.fn().mockReturnValue(mockComputedStyle)
 })
 
 // Mock ResizeObserver (commonly used in modern components)
-global.ResizeObserver = vi.fn().mockImplementation(() => ({
-  observe: vi.fn(),
-  unobserve: vi.fn(),
-  disconnect: vi.fn(),
-}))
+// 使用真正的类而不是 vi.fn().mockImplementation()，因为某些库在模块顶层实例化
+class MockResizeObserver {
+  callback: ResizeObserverCallback | null = null
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+  constructor(callback?: ResizeObserverCallback) {
+    this.callback = callback || null
+  }
+}
+global.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
 
 // Mock IntersectionObserver (used for lazy loading and scroll detection)
-global.IntersectionObserver = vi.fn().mockImplementation(() => ({
-  observe: vi.fn(),
-  unobserve: vi.fn(),
-  disconnect: vi.fn(),
-}))
+class MockIntersectionObserver {
+  callback: IntersectionObserverCallback | null = null
+  observe = vi.fn()
+  unobserve = vi.fn()
+  disconnect = vi.fn()
+  takeRecords = vi.fn().mockReturnValue([])
+  root = null
+  rootMargin = ''
+  thresholds: number[] = []
+  constructor(callback?: IntersectionObserverCallback) {
+    this.callback = callback || null
+  }
+}
+global.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver
+
+// Mock MutationObserver (used by CodeMirror and other DOM manipulation libraries)
+class MockMutationObserver {
+  callback: MutationCallback | null = null
+  observe = vi.fn()
+  disconnect = vi.fn()
+  takeRecords = vi.fn().mockReturnValue([])
+  constructor(callback?: MutationCallback) {
+    this.callback = callback || null
+  }
+}
+global.MutationObserver = MockMutationObserver as unknown as typeof MutationObserver
 
 // Mock window.matchMedia (used for responsive design)
 Object.defineProperty(window, 'matchMedia', {
@@ -104,4 +141,47 @@ Object.assign(Element.prototype, {
   scrollIntoView: vi.fn(),
 })
 
+// CodeMirror relies on Range geometry methods which are incomplete in jsdom.
+// Provide a minimal polyfill to avoid noisy test stderr.
+if (typeof Range !== 'undefined') {
+  const proto = Range.prototype as any
+  if (typeof proto.getClientRects !== 'function') {
+    proto.getClientRects = () => []
+  }
+  if (typeof proto.getBoundingClientRect !== 'function') {
+    proto.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      bottom: 0,
+      right: 0,
+      width: 0,
+      height: 0,
+      toJSON: () => ({})
+    })
+  }
+}
+
 console.log('[Test Setup] Global browser API mocks initialized')
+
+// ========== Pinia 服务清理（防止测试污染）==========
+import { afterEach } from 'vitest'
+import { setPiniaServices } from '../src/plugins/pinia'
+
+/**
+ * 全局测试清理：确保每个测试用例后都清理 Pinia 服务
+ * 避免测试用例之间的状态污染
+ *
+ * 这是 Codex 建议的"兜底机制"：
+ * - 即使测试用例忘记手动清理，全局 afterEach 也会自动清理
+ * - 配合 pinia-test-helpers.ts 中的 helper 使用效果更佳
+ */
+afterEach(() => {
+  setPiniaServices(null)
+})
+
+console.log('[Test Setup] Pinia services cleanup registered')
+
+// ========== UI 错误检测（console + 未捕获异常）==========
+setupErrorDetection()

@@ -1,10 +1,18 @@
-import { ILLMService, Message, StreamHandlers, LLMResponse, ModelOption, ToolDefinition } from './types';
+import type {
+  ILLMService,
+  Message,
+  StreamHandlers,
+  LLMResponse,
+  ModelOption,
+  ToolDefinition,
+  TextModel,
+  ITextAdapterRegistry
+} from './types';
 import type { TextModelConfig, ModelConfig } from '../model/types';
 import { ModelManager } from '../model/manager';
 import { APIError, RequestConfigError } from './errors';
 import { isRunningInElectron } from '../../utils/environment';
 import { ElectronLLMProxy } from './electron-proxy';
-import type { ITextAdapterRegistry } from './types';
 import { TextAdapterRegistry } from './adapters/registry';
 import { mergeOverrides, splitOverridesBySchema } from '../model/parameter-utils';
 
@@ -26,20 +34,20 @@ export class LLMService implements ILLMService {
    */
   private validateMessages(messages: Message[]): void {
     if (!Array.isArray(messages)) {
-      throw new RequestConfigError('消息必须是数组格式');
+      throw new RequestConfigError('Messages must be an array');
     }
     if (messages.length === 0) {
-      throw new RequestConfigError('消息列表不能为空');
+      throw new RequestConfigError('Messages array cannot be empty');
     }
     messages.forEach(msg => {
       if (!msg.role || !msg.content) {
-        throw new RequestConfigError('消息格式无效: 缺少必要字段');
+        throw new RequestConfigError('Invalid message format: missing required fields');
       }
       if (!['system', 'user', 'assistant', 'tool'].includes(msg.role)) {
-        throw new RequestConfigError(`不支持的消息类型: ${msg.role}`);
+        throw new RequestConfigError(`Unsupported message role: ${msg.role}`);
       }
       if (typeof msg.content !== 'string') {
-        throw new RequestConfigError('消息内容必须是字符串');
+        throw new RequestConfigError('Message content must be a string');
       }
     });
   }
@@ -47,18 +55,23 @@ export class LLMService implements ILLMService {
   /**
    * 验证模型配置
    */
-  private validateModelConfig(modelConfig: TextModelConfig): void {
+  private validateModelConfig(
+    modelConfig: TextModelConfig,
+    options: { allowDisabled?: boolean } = {}
+  ): void {
     if (!modelConfig) {
-      throw new RequestConfigError('模型配置不能为空');
+      throw new RequestConfigError('Model config cannot be empty');
     }
     if (!modelConfig.providerMeta || !modelConfig.providerMeta.id) {
-      throw new RequestConfigError('模型提供商元数据不能为空');
+      throw new RequestConfigError('Model provider metadata cannot be empty');
     }
     if (!modelConfig.modelMeta || !modelConfig.modelMeta.id) {
-      throw new RequestConfigError('模型元数据不能为空');
+      throw new RequestConfigError('Model metadata cannot be empty');
     }
-    if (!modelConfig.enabled) {
-      throw new RequestConfigError('模型未启用');
+    // Default behavior: disabled models cannot be used for normal requests.
+    // Connection testing is allowed to bypass this check (align with image model test behavior).
+    if (!options.allowDisabled && !modelConfig.enabled) {
+      throw new RequestConfigError('Model is not enabled');
     }
   }
 
@@ -68,22 +81,16 @@ export class LLMService implements ILLMService {
   async sendMessageStructured(messages: Message[], provider: string): Promise<LLMResponse> {
     try {
       if (!provider) {
-        throw new RequestConfigError('模型提供商不能为空');
+        throw new RequestConfigError('Model provider cannot be empty');
       }
 
       const modelConfig = await this.modelManager.getModel(provider);
       if (!modelConfig) {
-        throw new RequestConfigError(`模型 ${provider} 不存在`);
+        throw new RequestConfigError(`Model ${provider} not found`);
       }
 
       this.validateModelConfig(modelConfig);
       this.validateMessages(messages);
-
-      console.log('发送消息:', {
-        provider: modelConfig.providerMeta.id,
-        model: modelConfig.modelMeta.id,
-        messagesCount: messages.length
-      });
 
       // 通过 Registry 获取 Adapter
       const adapter = this.registry.getAdapter(modelConfig.providerMeta.id);
@@ -97,7 +104,7 @@ export class LLMService implements ILLMService {
       if (error instanceof RequestConfigError || error instanceof APIError) {
         throw error;
       }
-      throw new APIError(`发送消息失败: ${error.message}`);
+      throw new APIError(`Failed to send message: ${error.message}`);
     }
   }
 
@@ -121,20 +128,14 @@ export class LLMService implements ILLMService {
     callbacks: StreamHandlers
   ): Promise<void> {
     try {
-      console.log('开始流式请求:', { provider, messagesCount: messages.length });
       this.validateMessages(messages);
 
       const modelConfig = await this.modelManager.getModel(provider);
       if (!modelConfig) {
-        throw new RequestConfigError(`模型 ${provider} 不存在`);
+        throw new RequestConfigError(`Model ${provider} not found`);
       }
 
       this.validateModelConfig(modelConfig);
-
-      console.log('获取到模型实例:', {
-        provider: modelConfig.providerMeta.id,
-        model: modelConfig.modelMeta.id
-      });
 
       // 通过 Registry 获取 Adapter
       const adapter = this.registry.getAdapter(modelConfig.providerMeta.id);
@@ -145,7 +146,7 @@ export class LLMService implements ILLMService {
       await adapter.sendMessageStream(messages, runtimeConfig, callbacks);
 
     } catch (error) {
-      console.error('流式请求失败:', error);
+      console.error('Stream request failed:', error);
       callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
@@ -162,26 +163,14 @@ export class LLMService implements ILLMService {
     callbacks: StreamHandlers
   ): Promise<void> {
     try {
-      console.log('开始带工具的流式请求:', {
-        provider,
-        messagesCount: messages.length,
-        toolsCount: tools.length
-      });
-
       this.validateMessages(messages);
 
       const modelConfig = await this.modelManager.getModel(provider);
       if (!modelConfig) {
-        throw new RequestConfigError(`模型 ${provider} 不存在`);
+        throw new RequestConfigError(`Model ${provider} not found`);
       }
 
       this.validateModelConfig(modelConfig);
-
-      console.log('获取到模型实例（带工具）:', {
-        provider: modelConfig.providerMeta.id,
-        model: modelConfig.modelMeta.id,
-        tools: tools.map(t => t.function.name)
-      });
 
       // 通过 Registry 获取 Adapter
       const adapter = this.registry.getAdapter(modelConfig.providerMeta.id);
@@ -192,7 +181,7 @@ export class LLMService implements ILLMService {
       await adapter.sendMessageStreamWithTools(messages, runtimeConfig, tools, callbacks);
 
     } catch (error) {
-      console.error('带工具的流式请求失败:', error);
+      console.error('Stream request with tools failed:', error);
       callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
@@ -205,28 +194,37 @@ export class LLMService implements ILLMService {
   async testConnection(provider: string): Promise<void> {
     try {
       if (!provider) {
-        throw new RequestConfigError('模型提供商不能为空');
+        throw new RequestConfigError('Model provider cannot be empty');
       }
-      console.log('测试连接provider:', {
-        provider: provider,
-      });
+
+      const modelConfig = await this.modelManager.getModel(provider);
+      if (!modelConfig) {
+        throw new RequestConfigError(`Model ${provider} not found`);
+      }
+
+      // Align with image model connection testing: allow testing even if the model is disabled.
+      this.validateModelConfig(modelConfig, { allowDisabled: true });
 
       // 发送一个简单的测试消息
       const testMessages: Message[] = [
         {
           role: 'user',
-          content: '请回答ok'
+          content: 'Please reply ok'
         }
       ];
 
-      // 使用 sendMessage 进行测试
-      await this.sendMessage(testMessages, provider);
+      this.validateMessages(testMessages);
+
+      // Send directly through the adapter to avoid the normal "enabled" constraint.
+      const adapter = this.registry.getAdapter(modelConfig.providerMeta.id);
+      const runtimeConfig = this.prepareRuntimeConfig(modelConfig);
+      await adapter.sendMessage(testMessages, runtimeConfig);
 
     } catch (error: any) {
       if (error instanceof RequestConfigError || error instanceof APIError) {
         throw error;
       }
-      throw new APIError(`连接测试失败: ${error.message}`);
+      throw new APIError(`Connection test failed: ${error.message}`);
     }
   }
 
@@ -244,11 +242,27 @@ export class LLMService implements ILLMService {
       const baseConfig = await this.modelManager.getModel(provider);
       const modelConfig = await this.buildEffectiveModelConfig(provider, baseConfig, customConfig);
 
-      console.log(`获取 ${modelConfig.name || provider} 的模型列表`);
-
       // 使用 Registry 获取模型列表
       const providerId = modelConfig.providerMeta.id;
-      const models = await this.registry.getModels(providerId, modelConfig);
+      let models: TextModel[] = [];
+
+      // NOTE: Registry.getModels() will silently fall back to static models when dynamic fetch fails.
+      // For explicit "fetch model list" actions, we want to surface the failure so UI can avoid
+      // misleading "success" toasts and optionally fall back with a warning.
+      if (this.registry.supportsDynamicModels(providerId)) {
+        const dynamicModels = await this.registry.getDynamicModels(providerId, modelConfig);
+
+        const staticModels = this.registry.getStaticModels(providerId);
+        const dynamicIds = new Set(dynamicModels.map((m) => m.id));
+
+        // Merge static + dynamic for completeness; dynamic wins.
+        models = [
+          ...dynamicModels,
+          ...staticModels.filter((m) => !dynamicIds.has(m.id))
+        ];
+      } else {
+        models = this.registry.getStaticModels(providerId);
+      }
 
       // 转换为选项格式
       return models.map(model => ({
@@ -256,11 +270,11 @@ export class LLMService implements ILLMService {
         label: model.name
       }));
     } catch (error: any) {
-      console.error('获取模型列表失败:', error);
+      console.error('Failed to fetch model list:', error);
       if (error instanceof RequestConfigError || error instanceof APIError) {
         throw error;
       }
-      throw new APIError(`获取模型列表失败: ${error.message}`);
+      throw new APIError(`Failed to fetch model list: ${error.message}`);
     }
   }
 

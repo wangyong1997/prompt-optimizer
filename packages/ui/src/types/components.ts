@@ -83,10 +83,10 @@ export interface ConversationManagerProps extends BaseComponentProps {
   messages: ConversationMessage[]
   /** 可用变量集合（用于统计/高亮） */
   availableVariables: Record<string, string>
+  /** 🆕 临时变量值集合（用于 VariableAwareInput） */
+  temporaryVariables?: Record<string, string>
   /** 优化模式（用于模板分类） */
   optimizationMode?: 'system' | 'user'
-  /** 上下文模式（用于控制UI行为） */
-  contextMode?: import('@prompt-optimizer/core').ContextMode
   /** 变量扫描函数（标准化注入） */
   scanVariables?: (content: string) => string[]
   /** 变量替换函数（标准化注入） */
@@ -105,6 +105,14 @@ export interface ConversationManagerProps extends BaseComponentProps {
   collapsible?: boolean
   /** 标题 */
   title?: string
+  /** 🆕 当前选中的消息 ID（用于高亮显示） */
+  selectedMessageId?: string
+  /** 🆕 是否启用消息优化功能 */
+  enableMessageOptimization?: boolean
+  /** 🆕 消息优化中状态 */
+  isMessageOptimizing?: boolean
+  /** 🆕 是否启用工具管理功能 */
+  enableToolManagement?: boolean
 }
 
 export interface ConversationManagerEvents extends BaseComponentEvents {
@@ -118,6 +126,20 @@ export interface ConversationManagerEvents extends BaseComponentEvents {
   openVariableManager: (variableName?: string) => void
   /** 消息拖拽排序 */
   messageReorder: (fromIndex: number, toIndex: number) => void
+  /** 🆕 消息被选中用于优化 */
+  messageSelect: (message: ConversationMessage) => void
+  /** 🆕 触发消息优化 */
+  optimizeMessage: () => void
+  /** 🆕 打开工具管理器 */
+  'open-tool-manager': () => void
+  /** 🆕 变量提取事件 */
+  'variable-extracted': (data: {
+    variableName: string
+    variableValue: string
+    variableType: 'global' | 'temporary'
+  }) => void
+  /** 🆕 添加缺失变量事件 */
+  'add-missing-variable': (varName: string) => void
 }
 
 /**
@@ -138,8 +160,6 @@ export interface ContextEditorProps extends BaseComponentProps {
   tools?: ToolDefinition[]
   /** 优化模式（用于模板分类） */
   optimizationMode?: 'system' | 'user'
-  /** 上下文模式（用于控制UI行为） */
-  contextMode?: import('@prompt-optimizer/core').ContextMode
   /** 变量扫描函数（标准化注入） */
   scanVariables: (content: string) => string[]
   /** 变量替换函数（标准化注入） */
@@ -199,14 +219,18 @@ export interface TestAreaPanelProps extends BaseComponentProps {
   advancedModeEnabled?: boolean
   /** 测试内容 */
   testContent?: string
+
+  /** E2E: stable selector prefix, e.g. "basic-system" */
+  testIdPrefix?: string
+
   /** 主要操作按钮文字 */
   primaryActionText?: string
   /** 主要操作是否禁用 */
   primaryActionDisabled?: boolean
-  /** 原始测试结果（支持工具调用显示） */
-  originalResult?: AdvancedTestResult
-  /** 优化测试结果（支持工具调用显示） */
-  optimizedResult?: AdvancedTestResult
+  /** 第一列测试结果（支持工具调用显示） */
+  primaryResult?: AdvancedTestResult
+  /** 第二列测试结果（支持工具调用显示） */
+  secondaryResult?: AdvancedTestResult
   /** 单一测试结果（支持工具调用显示） */
   singleResult?: AdvancedTestResult
 }
@@ -369,4 +393,33 @@ export interface PerformanceMetrics {
   updateCount: number
   /** 最后更新时间 */
   lastUpdate: Date
+}
+
+/**
+ * ToolManagerModal 组件类型
+ */
+export interface ToolManagerModalProps extends BaseComponentProps {
+  /** 弹窗是否可见 */
+  visible: boolean
+  /** 工具列表 */
+  tools: ToolDefinition[]
+  /** 是否只读模式 */
+  readonly?: boolean
+  /** 弹窗标题 */
+  title?: string
+  /** 弹窗宽度 */
+  width?: string
+}
+
+export interface ToolManagerModalEvents extends BaseComponentEvents {
+  /** 弹窗可见性变更 */
+  'update:visible': (visible: boolean) => void
+  /** 工具列表变更 */
+  'update:tools': (tools: ToolDefinition[]) => void
+  /** 工具变更事件 */
+  toolChange: (tools: ToolDefinition[], action: 'add' | 'update' | 'delete', index: number) => void
+  /** 确认事件 */
+  confirm: (tools: ToolDefinition[]) => void
+  /** 取消事件 */
+  cancel: () => void
 }

@@ -27,6 +27,7 @@ export { StaticLoader } from './services/template/static-loader'
 export * from './services/template/errors'
 export { ElectronTemplateManagerProxy } from './services/template/electron-proxy'
 export { ElectronTemplateLanguageServiceProxy } from './services/template/electron-language-proxy'
+export { ALL_TEMPLATES } from './services/template/default-templates'
 
 // 导出历史记录相关
 export { HistoryManager, createHistoryManager } from './services/history/manager'
@@ -46,7 +47,6 @@ export type {
   ITextProviderAdapter,
   TextProvider,
   TextModel,
-  TextModelConfig,
   ConnectionSchema
 } from './services/llm/types'
 export { LLMService, createLLMService } from './services/llm/service'
@@ -74,7 +74,12 @@ export type {
   ImageProvider,
   ImageModel,
   ImageRequest,
+  Text2ImageRequest,
+  Image2ImageRequest,
+  MultiImageRequest,
+  MultiImageGenerationRequest,
   ImageResult,
+  ImageResultItem,
   ImageProgressHandlers,
   ImageModelConfig,
   IImageModelManager,
@@ -82,8 +87,17 @@ export type {
   IImageAdapterRegistry,
   IImageService,
   ConnectionSchema as ImageConnectionSchema,
-  ImageParameterDefinition
+  ImageParameterDefinition,
+  ImageMetadata,
+  ImageRef,
+  FullImageData,
+  ImageStorageConfig,
+  IImageStorageService,
+  ImageInputRef,
 } from './services/image/types'
+// 导出图像存储相关函数和类型
+export { isImageRef, createImageRef } from './services/image/types'
+export { ImageStorageService, createImageStorageService } from './services/image/storage'
 
 // 导出存储相关
 export * from './services/storage/types'
@@ -92,6 +106,16 @@ export { DexieStorageProvider } from './services/storage/dexieStorageProvider'
 export { LocalStorageProvider } from './services/storage/localStorageProvider'
 export { MemoryStorageProvider } from './services/storage/memoryStorageProvider'
 export { FileStorageProvider } from './services/storage/fileStorageProvider'
+export {
+  runStorageStartupSafetyCheck,
+  writeStartupRepairReport,
+  STARTUP_REPAIR_REPORT_PREFERENCE_KEY,
+  STARTUP_REPAIR_REPORT_STORAGE_KEY,
+} from './services/storage/startup-safety-check'
+export type {
+  StartupRepairAction,
+  StartupRepairReport,
+} from './services/storage/startup-safety-check'
 
 // 导出提示词服务相关
 export { PromptService } from './services/prompt/service'
@@ -122,6 +146,7 @@ export {
   isElectronApiReady,
   waitForElectronApi,
   isBrowser,
+  isDevelopment,
   getEnvVar,
   scanCustomModelEnvVars,
   clearCustomModelEnvCache,
@@ -135,25 +160,53 @@ export { validateCustomModelConfig } from './utils/environment'
 
 // 导出IPC序列化工具
 export { safeSerializeForIPC, debugIPCSerializability, safeSerializeArgs } from './utils/ipc-serialization'
+export { applyPatchOperationsToText } from './utils/patch-plan'
+export type { ApplyPatchResult, ApplyPatchReportItem, ApplyPatchStatus } from './utils/patch-plan'
 
 // 导出存储键常量
 export {
   CORE_SERVICE_KEYS,
   UI_SETTINGS_KEYS,
-  MODEL_SELECTION_KEYS,
   TEMPLATE_SELECTION_KEYS,
   IMAGE_MODE_KEYS,
+  FUNCTION_MODEL_KEYS,
+  getModeModelKey,
   ALL_STORAGE_KEYS,
   ALL_STORAGE_KEYS_ARRAY
 } from './constants/storage-keys'
 export type {
   CoreServiceKey,
   UISettingsKey,
-  ModelSelectionKey,
   TemplateSelectionKey,
   ImageModeKey,
+  FunctionModelKey,
   StorageKey
 } from './constants/storage-keys'
+
+// UI function-mode types are defined alongside prompt service types.
+export type { FunctionMode } from './services/prompt/types'
+
+// Export error codes for internationalization | 导出错误代码用于国际化
+export {
+  ERROR_CODES,
+  EVALUATION_ERROR_CODES,
+  LLM_ERROR_CODES,
+  HISTORY_ERROR_CODES,
+  COMPARE_ERROR_CODES,
+  STORAGE_ERROR_CODES,
+  MODEL_ERROR_CODES,
+  TEMPLATE_ERROR_CODES,
+  CONTEXT_ERROR_CODES,
+  PROMPT_ERROR_CODES,
+  VARIABLE_EXTRACTION_ERROR_CODES,
+  VARIABLE_VALUE_GENERATION_ERROR_CODES,
+  FAVORITE_ERROR_CODES,
+  IMAGE_ERROR_CODES,
+  IMPORT_EXPORT_ERROR_CODES,
+  DATA_ERROR_CODES,
+  CORE_ERROR_CODES,
+} from './constants/error-codes'
+export type { ErrorCode } from './constants/error-codes'
 
 // 导出上下文相关
 export * from './services/context/types'
@@ -165,8 +218,38 @@ export * from './services/context/constants'
 export { FavoriteManager } from './services/favorite/manager'
 export { FavoriteManagerElectronProxy } from './services/favorite/electron-proxy'
 export { TagTypeConverter } from './services/favorite/type-converter'
+export {
+  FAVORITE_ITEM_HARD_LIMIT_BYTES,
+  FAVORITES_SOFT_LIMIT_BYTES,
+  FAVORITES_HARD_LIMIT_BYTES,
+  INLINE_IMAGE_DATA_URL_RE,
+  assertFavoriteMetadataHasNoInlineImages,
+  assertFavoriteFitsItemBudget,
+  assertFavoritesPayloadWithinBudget,
+  normalizeFavoriteRecord,
+} from './services/favorite/storage-guards'
 export * from './services/favorite/types'
 export * from './services/favorite/errors'
 
 // 导出高级模块相关类型
 export * from './types/advanced'
+
+// 导出评估服务相关
+export * from './services/evaluation/types'
+export * from './services/evaluation/errors'
+export { EvaluationService, createEvaluationService } from './services/evaluation/service'
+export * from './services/evaluation/rewrite-from-evaluation'
+
+// 导出图像理解服务相关
+export * from './services/image-understanding/types'
+export { ImageUnderstandingService, createImageUnderstandingService } from './services/image-understanding/service'
+
+// 🆕 导出变量提取服务相关
+export * from './services/variable-extraction/types'
+export * from './services/variable-extraction/errors'
+export { VariableExtractionService, createVariableExtractionService } from './services/variable-extraction/service'
+
+// 🆕 导出变量值生成服务相关
+export * from './services/variable-value-generation/types'
+export * from './services/variable-value-generation/errors'
+export { VariableValueGenerationService, createVariableValueGenerationService } from './services/variable-value-generation/service'

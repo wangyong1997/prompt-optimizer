@@ -39,11 +39,15 @@ const mockServices = {
 }
 
 // Minimal i18n/toast mocks
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({
-    t: (key: string) => key
-  })
-}))
+vi.mock('vue-i18n', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('vue-i18n')>()
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: (key: string) => key,
+    }),
+  }
+})
 
 vi.mock('../../../src/composables/useToast', () => ({
   useToast: () => ({
@@ -119,6 +123,12 @@ describe('ModelManager', () => {
           },
           ImageModelManager: {
             template: '<div class="stub-image-manager" />'
+          },
+          TextModelManager: {
+            template: '<div class="stub-text-manager" />'
+          },
+          FunctionModelManager: {
+            template: '<div class="stub-function-manager" />'
           },
           ImageModelEditModal: {
             template: '<div class="stub-image-edit-modal" />'

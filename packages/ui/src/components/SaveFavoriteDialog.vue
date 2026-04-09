@@ -111,6 +111,82 @@
                 />
               </div>
             </n-form-item>
+
+            <n-form-item :label="t('favorites.dialog.imagesLabel')">
+              <n-space vertical :size="8" style="width: 100%;">
+                <n-upload
+                  accept="image/*"
+                  multiple
+                  :default-upload="false"
+                  :show-file-list="false"
+                  :disabled="saving"
+                  @before-upload="handleBeforeImageUpload"
+                >
+                  <n-upload-dragger>
+                    <div style="padding: 12px; text-align: center;">
+                      <n-space vertical :size="6" align="center">
+                        <n-text depth="3">{{ t('favorites.dialog.imagesUploadHint') }}</n-text>
+                        <n-text depth="3" style="font-size: 12px;">
+                          {{ t('favorites.dialog.imagesUploadSupport') }}
+                        </n-text>
+                      </n-space>
+                    </div>
+                  </n-upload-dragger>
+                </n-upload>
+
+                <AppPreviewImageGroup v-if="mediaDraft.sources.length > 0">
+                  <n-space :size="8" wrap>
+                    <div
+                      v-for="(source, index) in mediaDraft.sources"
+                      :key="`${index}-${source.slice(0, 32)}`"
+                      style="display: flex; flex-direction: column; gap: 6px;"
+                    >
+                      <AppPreviewImage
+                        :src="source"
+                        width="88"
+                        object-fit="cover"
+                        :alt="t('favorites.dialog.imageAlt', { index: index + 1 })"
+                      />
+                      <n-space :size="4" align="center" justify="space-between">
+                        <n-tag
+                          v-if="mediaDraft.coverIndex === index"
+                          size="small"
+                          type="success"
+                          :bordered="false"
+                        >
+                          {{ t('favorites.dialog.coverTag') }}
+                        </n-tag>
+                        <n-button
+                          v-else
+                          quaternary
+                          size="tiny"
+                          @click="handleSetCover(index)"
+                        >
+                          {{ t('favorites.dialog.setAsCover') }}
+                        </n-button>
+                        <n-button
+                          quaternary
+                          type="error"
+                          size="tiny"
+                          @click="handleRemoveImage(index)"
+                        >
+                          {{ t('favorites.dialog.removeImage') }}
+                        </n-button>
+                      </n-space>
+                    </div>
+                  </n-space>
+                </AppPreviewImageGroup>
+
+                <n-button
+                  v-if="mediaDraft.sources.length > 0"
+                  quaternary
+                  size="small"
+                  @click="handleClearImages"
+                >
+                  {{ t('favorites.dialog.clearImages') }}
+                </n-button>
+              </n-space>
+            </n-form-item>
           </n-form>
         </n-card>
       </div>
@@ -159,17 +235,28 @@ import {
   NTag,
   NButton,
   NSpace,
+  NText,
   NDivider,
   NGrid,
-  NGridItem
+  NGridItem,
+  NUpload,
+  NUploadDragger,
+  type UploadFileInfo,
 } from 'naive-ui';
 import { useI18n } from 'vue-i18n';
 import { useToast } from '../composables/ui/useToast';
 import { useTagSuggestions } from '../composables/ui/useTagSuggestions';
+import AppPreviewImage from './media/AppPreviewImage.vue';
+import AppPreviewImageGroup from './media/AppPreviewImageGroup.vue';
 import OutputDisplayCore from './OutputDisplayCore.vue';
 import CategoryTreeSelect from './CategoryTreeSelect.vue';
 import type { AppServices } from '../types/services';
 import type { FavoritePrompt } from '@prompt-optimizer/core';
+import { buildFavoriteMediaMetadata, parseFavoriteMediaMetadata } from '../utils/favorite-media';
+import {
+  persistImageSourceAsAssetId,
+  resolveAssetIdToDataUrl,
+} from '../utils/image-asset-storage';
 
 const { t } = useI18n();
 const { filterTags, loadTags } = useTagSuggestions();
@@ -184,9 +271,20 @@ interface Props {
   /** 原始内容(用于从优化器保存时) */
   originalContent?: string
   /** 当前功能模式(用于从优化器保存时预填充) */
-  currentFunctionMode?: 'basic' | 'context' | 'image'
+  currentFunctionMode?: 'basic' | 'context' | 'pro' | 'image'
   /** 当前优化模式(用于从优化器保存时预填充) */
   currentOptimizationMode?: 'system' | 'user'
+  /** 可选的预填充数据（外部导入收藏确认场景） */
+  prefill?: {
+    title?: string
+    description?: string
+    category?: string
+    tags?: string[]
+    functionMode?: 'basic' | 'context' | 'image'
+    optimizationMode?: 'system' | 'user'
+    imageSubMode?: 'text2image' | 'image2image' | 'multiimage'
+    metadata?: Record<string, unknown>
+  }
   /** 要编辑的收藏(仅用于 edit 模式) */
   favorite?: FavoritePrompt
 }
@@ -197,6 +295,7 @@ const props = withDefaults(defineProps<Props>(), {
   originalContent: undefined,
   currentFunctionMode: 'basic',
   currentOptimizationMode: 'system',
+  prefill: undefined,
   favorite: undefined
 });
 
@@ -209,6 +308,7 @@ const services = inject<Ref<AppServices | null>>('services');
 const message = useToast();
 
 const saving = ref(false);
+const mediaTouched = ref(false);
 
 // 标签输入和建议
 const tagInputValue = ref('');
@@ -236,8 +336,248 @@ const formData = reactive({
   tags: [] as string[],
   functionMode: 'basic' as 'basic' | 'context' | 'image',
   optimizationMode: 'system' as 'system' | 'user' | undefined,
-  imageSubMode: undefined as 'text2image' | 'image2image' | undefined
+  imageSubMode: undefined as 'text2image' | 'image2image' | 'multiimage' | undefined
 });
+
+const mediaDraft = reactive({
+  sources: [] as string[],
+  coverIndex: -1,
+});
+
+const dedupeStrings = (items: string[]) => Array.from(new Set(items.filter(Boolean)));
+
+const getPreferredStorageService = () => {
+  return services?.value?.favoriteImageStorageService || services?.value?.imageStorageService || null;
+};
+
+const getReadStorageCandidates = () => {
+  const favoriteStorage = services?.value?.favoriteImageStorageService || null;
+  const legacyStorage = services?.value?.imageStorageService || null;
+
+  if (favoriteStorage && legacyStorage && favoriteStorage !== legacyStorage) {
+    return [favoriteStorage, legacyStorage];
+  }
+
+  if (favoriteStorage) return [favoriteStorage];
+  if (legacyStorage) return [legacyStorage];
+  return [];
+};
+
+const readBlobAsDataUrl = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(blob);
+  });
+
+const resolveAssetIdsToDataUrls = async (assetIds: string[]): Promise<string[]> => {
+  const storageCandidates = getReadStorageCandidates();
+  if (storageCandidates.length === 0 || assetIds.length === 0) return [];
+
+  const resolved: string[] = [];
+  for (const assetId of dedupeStrings(assetIds)) {
+    for (const storageService of storageCandidates) {
+      try {
+        const dataUrl = await resolveAssetIdToDataUrl(assetId, storageService);
+        if (dataUrl) {
+          resolved.push(dataUrl);
+          break;
+        }
+      } catch (error) {
+        console.warn('[SaveFavoriteDialog] Failed to resolve asset id:', assetId, error);
+      }
+    }
+  }
+
+  return resolved;
+};
+
+const resetMediaDraft = () => {
+  mediaDraft.sources = [];
+  mediaDraft.coverIndex = -1;
+};
+
+const hydrateMediaDraftFromFavorite = async (favorite?: FavoritePrompt) => {
+  resetMediaDraft();
+  const media = parseFavoriteMediaMetadata(favorite);
+  if (!media) return;
+
+  const resolvedCover = media.coverAssetId
+    ? (await resolveAssetIdsToDataUrls([media.coverAssetId]))[0]
+    : undefined;
+  const resolvedAssets = await resolveAssetIdsToDataUrls(media.assetIds);
+
+  const sources = dedupeStrings([
+    resolvedCover || media.coverUrl || '',
+    ...resolvedAssets,
+    ...media.urls,
+  ]);
+
+  mediaDraft.sources = sources;
+  if (sources.length === 0) {
+    mediaDraft.coverIndex = -1;
+    return;
+  }
+
+  const coverSource = resolvedCover || media.coverUrl || '';
+  mediaDraft.coverIndex = coverSource ? Math.max(0, sources.indexOf(coverSource)) : 0;
+};
+
+const hydrateMediaDraftFromMetadata = async (metadata?: Record<string, unknown>) => {
+  resetMediaDraft();
+  if (!metadata) return;
+
+  const media = parseFavoriteMediaMetadata({ metadata } as FavoritePrompt);
+  if (!media) return;
+
+  const resolvedCover = media.coverAssetId
+    ? (await resolveAssetIdsToDataUrls([media.coverAssetId]))[0]
+    : undefined;
+  const resolvedAssets = await resolveAssetIdsToDataUrls(media.assetIds);
+
+  const sources = dedupeStrings([
+    resolvedCover || media.coverUrl || '',
+    ...resolvedAssets,
+    ...media.urls,
+  ]);
+
+  mediaDraft.sources = sources;
+  if (sources.length === 0) {
+    mediaDraft.coverIndex = -1;
+    return;
+  }
+
+  const coverSource = resolvedCover || media.coverUrl || '';
+  mediaDraft.coverIndex = coverSource ? Math.max(0, sources.indexOf(coverSource)) : 0;
+};
+
+const resolvePrefillCategoryId = async (candidate?: string): Promise<string> => {
+  const normalized = String(candidate || '').trim();
+  if (!normalized) return '';
+
+  const servicesValue = services?.value;
+  if (!servicesValue?.favoriteManager) return '';
+
+  try {
+    const categories = await servicesValue.favoriteManager.getCategories();
+    if (categories.some((category) => category.id === normalized)) {
+      return normalized;
+    }
+
+    const lowered = normalized.toLowerCase();
+    const matched = categories.find(
+      (category) => String(category.name || '').trim().toLowerCase() === lowered,
+    );
+    return matched?.id || '';
+  } catch (error) {
+    console.warn('[SaveFavoriteDialog] Failed to resolve prefill category:', error);
+    return '';
+  }
+};
+
+const buildMediaMetadataForSave = async () => {
+  const normalizedSources = dedupeStrings(
+    mediaDraft.sources.map((item) => String(item || '').trim()).filter(Boolean),
+  );
+
+  if (normalizedSources.length === 0) return null;
+
+  const preferredStorage = getPreferredStorageService();
+  const assetIds: string[] = [];
+  const fallbackUrls: string[] = [];
+  const sourceToAssetId = new Map<string, string>();
+
+  for (const source of normalizedSources) {
+    if (!preferredStorage) {
+      fallbackUrls.push(source);
+      continue;
+    }
+
+    try {
+      const assetId = await persistImageSourceAsAssetId({
+        source,
+        storageService: preferredStorage,
+        sourceType: 'uploaded',
+      });
+
+      if (assetId) {
+        assetIds.push(assetId);
+        sourceToAssetId.set(source, assetId);
+      } else {
+        fallbackUrls.push(source);
+      }
+    } catch (error) {
+      console.warn('[SaveFavoriteDialog] Failed to persist media source:', error);
+      fallbackUrls.push(source);
+    }
+  }
+
+  const coverSource =
+    mediaDraft.coverIndex >= 0 && mediaDraft.coverIndex < normalizedSources.length
+      ? normalizedSources[mediaDraft.coverIndex]
+      : normalizedSources[0];
+
+  const coverAssetId = coverSource ? sourceToAssetId.get(coverSource) : undefined;
+  const coverUrl = coverSource && !coverAssetId ? coverSource : undefined;
+
+  return buildFavoriteMediaMetadata({
+    coverAssetId,
+    coverUrl,
+    assetIds,
+    urls: fallbackUrls,
+  });
+};
+
+const handleBeforeImageUpload = async (options: { file: UploadFileInfo }) => {
+  const raw = (options.file as unknown as { file?: Blob | null }).file;
+  if (!raw) return false;
+
+  try {
+    const dataUrl = await readBlobAsDataUrl(raw);
+    if (dataUrl) {
+      mediaDraft.sources = dedupeStrings([...mediaDraft.sources, dataUrl]);
+      mediaTouched.value = true;
+      if (mediaDraft.coverIndex < 0) {
+        mediaDraft.coverIndex = 0;
+      }
+    }
+  } catch (error) {
+    console.error('[SaveFavoriteDialog] Failed to read selected image:', error);
+    message.error(t('favorites.dialog.messages.imageReadFailed'));
+  }
+
+  return false;
+};
+
+const handleSetCover = (index: number) => {
+  if (index < 0 || index >= mediaDraft.sources.length) return;
+  mediaTouched.value = true;
+  mediaDraft.coverIndex = index;
+};
+
+const handleRemoveImage = (index: number) => {
+  if (index < 0 || index >= mediaDraft.sources.length) return;
+
+  mediaTouched.value = true;
+
+  mediaDraft.sources.splice(index, 1);
+  if (mediaDraft.sources.length === 0) {
+    mediaDraft.coverIndex = -1;
+    return;
+  }
+
+  if (mediaDraft.coverIndex === index) {
+    mediaDraft.coverIndex = 0;
+  } else if (mediaDraft.coverIndex > index) {
+    mediaDraft.coverIndex -= 1;
+  }
+};
+
+const handleClearImages = () => {
+  mediaTouched.value = true;
+  resetMediaDraft();
+};
 
 // 选项配置
 const functionModeOptions = computed(() => [
@@ -246,14 +586,30 @@ const functionModeOptions = computed(() => [
   { label: t('favorites.dialog.functionModes.image'), value: 'image' }
 ]);
 
-const optimizationModeOptions = computed(() => [
-  { label: t('favorites.dialog.optimizationModes.system'), value: 'system' },
-  { label: t('favorites.dialog.optimizationModes.user'), value: 'user' }
-]);
+const optimizationModeOptions = computed(() => {
+  // 根据功能模式动态生成选项
+  const isContextMode = formData.functionMode === 'context';
+
+  return [
+    {
+      label: isContextMode
+        ? t('contextMode.optimizationMode.message')
+        : t('favorites.dialog.optimizationModes.system'),
+      value: 'system'
+    },
+    {
+      label: isContextMode
+        ? t('contextMode.optimizationMode.variable')
+        : t('favorites.dialog.optimizationModes.user'),
+      value: 'user'
+    }
+  ];
+});
 
 const imageSubModeOptions = computed(() => [
   { label: t('favorites.dialog.imageModes.text2image'), value: 'text2image' },
-  { label: t('favorites.dialog.imageModes.image2image'), value: 'image2image' }
+  { label: t('favorites.dialog.imageModes.image2image'), value: 'image2image' },
+  { label: t('imageMode.multiimage'), value: 'multiimage' }
 ]);
 
 // 功能模式切换处理
@@ -354,10 +710,43 @@ const handleSave = async () => {
       imageSubMode: formData.imageSubMode
     };
 
+    const existingMetadata =
+      props.mode === 'edit' && props.favorite?.metadata && typeof props.favorite.metadata === 'object'
+        ? { ...props.favorite.metadata }
+        : props.mode === 'save' && props.prefill?.metadata && typeof props.prefill.metadata === 'object'
+          ? { ...props.prefill.metadata }
+        : {};
+
+    const mediaMetadata = await buildMediaMetadataForSave();
+    const prefillMedia =
+      props.mode === 'save' && props.prefill?.metadata && typeof props.prefill.metadata === 'object'
+        ? (props.prefill.metadata as Record<string, unknown>).media
+        : undefined;
+
+    if (mediaMetadata) {
+      existingMetadata.media = mediaMetadata;
+    } else if (
+      props.mode === 'save' &&
+      !mediaTouched.value &&
+      prefillMedia &&
+      typeof prefillMedia === 'object'
+    ) {
+      existingMetadata.media = { ...(prefillMedia as Record<string, unknown>) };
+    } else {
+      delete existingMetadata.media;
+    }
+
+    if (props.originalContent) {
+      existingMetadata.originalContent = props.originalContent;
+    }
+
+    const metadata = Object.keys(existingMetadata).length > 0 ? existingMetadata : undefined;
+
     if (props.mode === 'edit' && props.favorite) {
       // 编辑模式：更新现有收藏
       await servicesValue.favoriteManager.updateFavorite(props.favorite.id, {
-        ...basePayload
+        ...basePayload,
+        metadata,
       });
       message.success(t('favorites.dialog.messages.editSuccess'));
     } else {
@@ -370,18 +759,13 @@ const handleSave = async () => {
         tags: string[];
         functionMode: 'basic' | 'context' | 'image';
         optimizationMode?: 'system' | 'user';
-        imageSubMode?: 'text2image' | 'image2image';
+        imageSubMode?: 'text2image' | 'image2image' | 'multiimage';
         metadata?: Record<string, unknown>;
       } = {
         ...basePayload
       };
 
-      // 如果是从优化器保存,添加元数据
-      if (props.originalContent) {
-        favoriteData.metadata = {
-          originalContent: props.originalContent
-        };
-      }
+      favoriteData.metadata = metadata;
 
       await servicesValue.favoriteManager.addFavorite(favoriteData);
       message.success(t('favorites.dialog.messages.saveSuccess'));
@@ -401,6 +785,8 @@ const handleSave = async () => {
 // 监听对话框显示,初始化表单
 watch(() => props.show, async (newShow) => {
   if (newShow) {
+    mediaTouched.value = false;
+
     // 加载标签建议
     await loadTags();
 
@@ -414,6 +800,7 @@ watch(() => props.show, async (newShow) => {
       formData.functionMode = 'basic';
       formData.optimizationMode = 'system';
       formData.imageSubMode = undefined;
+      resetMediaDraft();
     } else if (props.mode === 'edit' && props.favorite) {
       // 编辑模式: 加载现有收藏数据
       formData.title = props.favorite.title;
@@ -424,10 +811,15 @@ watch(() => props.show, async (newShow) => {
       formData.functionMode = props.favorite.functionMode || 'basic';
       formData.optimizationMode = props.favorite.optimizationMode;
       formData.imageSubMode = props.favorite.imageSubMode;
+      await hydrateMediaDraftFromFavorite(props.favorite);
     } else {
       // 保存模式: 智能预填充
+      const prefill = props.prefill;
+
       // 1. 标题 = 原始提示词前30字符(去除换行符)
-      const titleSource = props.originalContent || props.content || '';
+      const titleSource = (typeof prefill?.title === 'string' && prefill.title.trim()
+        ? prefill.title
+        : props.originalContent || props.content || '');
       formData.title = titleSource
         .replace(/\r?\n/g, ' ')  // 替换换行为空格
         .substring(0, 30)
@@ -436,12 +828,34 @@ watch(() => props.show, async (newShow) => {
       // 2. 内容 = 优化后的提示词
       formData.content = props.content || '';
 
-      // 3. 根据当前功能模式和优化模式自动设置
-      if (props.currentFunctionMode === 'image') {
+      // 3. 说明 / 分类 / 标签 预填充
+      formData.description = typeof prefill?.description === 'string' ? prefill.description : '';
+      formData.category = await resolvePrefillCategoryId(
+        typeof prefill?.category === 'string' ? prefill.category : '',
+      );
+      formData.tags = Array.isArray(prefill?.tags)
+        ? dedupeStrings(prefill.tags.map((tag) => String(tag || '').trim()).filter(Boolean))
+        : [];
+
+      // 4. 根据预填充模式（优先）或当前模式自动设置
+      if (prefill?.functionMode === 'image') {
         formData.functionMode = 'image';
-        formData.imageSubMode = 'text2image';  // 默认文生图
+        formData.imageSubMode =
+          prefill.imageSubMode === 'image2image'
+            ? 'image2image'
+            : prefill.imageSubMode === 'multiimage'
+              ? 'multiimage'
+              : 'text2image';
         formData.optimizationMode = undefined;
-      } else if (props.currentFunctionMode === 'context') {
+      } else if (prefill?.functionMode === 'context' || prefill?.functionMode === 'basic') {
+        formData.functionMode = prefill.functionMode;
+        formData.optimizationMode = prefill.optimizationMode === 'user' ? 'user' : 'system';
+        formData.imageSubMode = undefined;
+      } else if (props.currentFunctionMode === 'image') {
+        formData.functionMode = 'image';
+        formData.imageSubMode = 'text2image';
+        formData.optimizationMode = undefined;
+      } else if (props.currentFunctionMode === 'context' || props.currentFunctionMode === 'pro') {
         formData.functionMode = 'context';
         formData.optimizationMode = props.currentOptimizationMode;
         formData.imageSubMode = undefined;
@@ -451,10 +865,11 @@ watch(() => props.show, async (newShow) => {
         formData.imageSubMode = undefined;
       }
 
-      // 重置其他字段
-      formData.description = '';
-      formData.category = '';
-      formData.tags = [];
+      const prefillMetadata =
+        prefill?.metadata && typeof prefill.metadata === 'object'
+          ? (prefill.metadata as Record<string, unknown>)
+          : undefined;
+      await hydrateMediaDraftFromMetadata(prefillMetadata);
     }
   }
 }, { immediate: true });

@@ -4,6 +4,9 @@ import { resolve } from 'path'
 import path from 'path'
 
 export default defineConfig({
+  // Monorepo: load VITE_* from repo root .env(.local) so optional integrations
+  // can be enabled for the built UI bundle used by the web dev server.
+  envDir: resolve(__dirname, '../..'),
   plugins: [vue()],
   resolve: {
     alias: {
@@ -24,19 +27,20 @@ export default defineConfig({
     } : null,
     sourcemap: true,
     rollupOptions: {
-      external: ['vue', '@prompt-optimizer/core', 'element-plus', 'element-plus/dist/index.css', 'uuid'],
+      external: ['vue', 'vue-router', '@prompt-optimizer/core', 'uuid'],
       output: {
         globals: {
           vue: 'Vue',
+          'vue-router': 'VueRouter',
           '@prompt-optimizer/core': 'PromptOptimizerCore',
-          'element-plus': 'ElementPlus',
           'uuid': 'uuid'
         },
         assetFileNames: 'style.css'
       }
     },
     cssCodeSplit: false,
-    emptyOutDir: false
+    // UI types are emitted in a separate build step after Vite finishes.
+    emptyOutDir: true
   },
   assetsInclude: ['**/*.jpg', '**/*.jpeg', '**/*.png', '**/*.svg']
 }) 

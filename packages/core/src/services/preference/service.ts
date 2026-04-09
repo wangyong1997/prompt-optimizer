@@ -1,14 +1,69 @@
 import type { IPreferenceService } from "./types";
 import type { IStorageProvider } from "../storage/types";
 import { ImportExportError } from "../../interfaces/import-export";
+import { IMPORT_EXPORT_ERROR_CODES } from "../../constants/error-codes";
+import { StorageError } from "../storage/errors";
+import { toErrorWithCode } from "../../utils/error";
+
+const SESSION_KEY_PREFIX = "session/";
+const MAX_SESSION_SNAPSHOT_BYTES = 1024 * 1024;
+
+type SessionStorageOperation = "read" | "write";
+type PreferenceStorageOperation = SessionStorageOperation | "delete";
+
+const getSerializedValueBytes = (value: string): number =>
+  new TextEncoder().encode(value).byteLength;
+
+const assertSessionSnapshotSize = (
+  key: string,
+  serializedValue: string,
+  operation: SessionStorageOperation,
+): void => {
+  if (!key.startsWith(SESSION_KEY_PREFIX)) {
+    return;
+  }
+
+  const bytes = getSerializedValueBytes(serializedValue);
+  if (bytes <= MAX_SESSION_SNAPSHOT_BYTES) {
+    return;
+  }
+
+  throw new StorageError(
+    `Session snapshot exceeds ${MAX_SESSION_SNAPSHOT_BYTES} bytes`,
+    operation,
+    {
+      reason: "session_snapshot_too_large",
+      key,
+      bytes,
+      limitBytes: MAX_SESSION_SNAPSHOT_BYTES,
+    },
+  );
+};
+
+const assertValidPreferenceKey: (
+  key: unknown,
+  operation: PreferenceStorageOperation,
+) => asserts key is string = (key, operation) => {
+  if (typeof key !== "string" || key.length === 0) {
+    throw new StorageError("Invalid preference key", operation, {
+      reason: "invalid_preference_key",
+      keyType: typeof key,
+    });
+  }
+};
 
 // 需要导出的UI配置键 - 白名单验证
 const UI_SETTINGS_KEYS = [
   "app:settings:ui:theme-id",
   "app:settings:ui:preferred-language",
   "app:settings:ui:builtin-template-language",
+
+  // 已废弃：模型选择已迁移到各模式的 session store
+  // 保留用于导入旧版本数据时的向后兼容，避免导入失败
+  // TODO: 确认无旧数据后可安全移除（预计 v3.0）
   "app:selected-optimize-model",
   "app:selected-test-model",
+
   "app:selected-optimize-template", // 系统优化模板
   "app:selected-user-optimize-template", // 用户优化模板
   "app:selected-iterate-template", // 迭代模板
@@ -77,12 +132,14 @@ export class PreferenceService implements IPreferenceService {
    */
   async get<T>(key: string, defaultValue: T): Promise<T> {
     try {
+      assertValidPreferenceKey(key, "read");
       const prefKey = this.getPrefKey(key);
       const storedValue = await this.storageProvider.getItem(prefKey);
 
       if (storedValue === null) {
         return defaultValue;
       }
+      assertSessionSnapshotSize(key, storedValue, "read");
       // 将键添加到缓存中
       this.keyCache.add(key);
       return JSON.parse(storedValue) as T;
@@ -91,7 +148,11 @@ export class PreferenceService implements IPreferenceService {
         `[PreferenceService] Error getting preference for key "${key}":`,
         error,
       );
-      throw new Error(`Failed to get preference: ${error}`);
+      if (typeof (error as any)?.code === "string") {
+        throw toErrorWithCode(error);
+      }
+      const details = error instanceof Error ? error.message : String(error);
+      throw new StorageError(`Failed to get preference: ${details}`, "read");
     }
   }
 
@@ -102,8 +163,10 @@ export class PreferenceService implements IPreferenceService {
    */
   async set<T>(key: string, value: T): Promise<void> {
     try {
+      assertValidPreferenceKey(key, "write");
       const prefKey = this.getPrefKey(key);
       const stringValue = JSON.stringify(value);
+      assertSessionSnapshotSize(key, stringValue, "write");
 
       await this.storageProvider.setItem(prefKey, stringValue);
       // 将键添加到缓存中
@@ -113,7 +176,11 @@ export class PreferenceService implements IPreferenceService {
         `[PreferenceService] Error setting preference for key "${key}":`,
         error,
       );
-      throw new Error(`Failed to set preference: ${error}`);
+      if (typeof (error as any)?.code === "string") {
+        throw toErrorWithCode(error);
+      }
+      const details = error instanceof Error ? error.message : String(error);
+      throw new StorageError(`Failed to set preference: ${details}`, "write");
     }
   }
 
@@ -123,6 +190,7 @@ export class PreferenceService implements IPreferenceService {
    */
   async delete(key: string): Promise<void> {
     try {
+      assertValidPreferenceKey(key, "delete");
       const prefKey = this.getPrefKey(key);
       await this.storageProvider.removeItem(prefKey);
       // 从缓存中移除键
@@ -132,7 +200,11 @@ export class PreferenceService implements IPreferenceService {
         `[PreferenceService] Error deleting preference for key "${key}":`,
         error,
       );
-      throw new Error(`Failed to delete preference: ${error}`);
+      if (typeof (error as any)?.code === "string") {
+        throw toErrorWithCode(error);
+      }
+      const details = error instanceof Error ? error.message : String(error);
+      throw new StorageError(`Failed to delete preference: ${details}`, "delete");
     }
   }
 
@@ -158,7 +230,11 @@ export class PreferenceService implements IPreferenceService {
       this.keyCache.clear();
     } catch (error) {
       console.error("[PreferenceService] Error clearing preferences:", error);
-      throw new Error(`Failed to clear preferences: ${error}`);
+      if (typeof (error as any)?.code === "string") {
+        throw toErrorWithCode(error);
+      }
+      const details = error instanceof Error ? error.message : String(error);
+      throw new StorageError(`Failed to clear preferences: ${details}`, "clear");
     }
   }
 
@@ -192,7 +268,11 @@ export class PreferenceService implements IPreferenceService {
         "[PreferenceService] Error getting all preferences:",
         error,
       );
-      throw new Error(`Failed to get all preferences: ${error}`);
+      if (typeof (error as any)?.code === "string") {
+        throw toErrorWithCode(error);
+      }
+      const details = error instanceof Error ? error.message : String(error);
+      throw new StorageError(`Failed to get all preferences: ${details}`, "read");
     }
   }
 
@@ -209,6 +289,7 @@ export class PreferenceService implements IPreferenceService {
         "Failed to export preference data",
         await this.getDataType(),
         error as Error,
+        IMPORT_EXPORT_ERROR_CODES.EXPORT_FAILED,
       );
     }
   }
@@ -218,8 +299,11 @@ export class PreferenceService implements IPreferenceService {
    */
   async importData(data: any): Promise<void> {
     if (!(await this.validateData(data))) {
-      throw new Error(
+      throw new ImportExportError(
         "Invalid preference data format: data must be an object with string key-value pairs",
+        await this.getDataType(),
+        undefined,
+        IMPORT_EXPORT_ERROR_CODES.VALIDATION_ERROR,
       );
     }
 

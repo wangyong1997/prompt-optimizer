@@ -55,18 +55,33 @@
                 </NTag>
                 <!-- 优化模式标签 -->
                 <NTag
-                  v-if="chain.rootRecord.type === 'optimize' || chain.rootRecord.type === 'contextSystemOptimize'"
+                  v-if="chain.rootRecord.type === 'optimize'"
                   type="info"
                   size="small"
                 >
                   {{ t('common.system') }}
                 </NTag>
                 <NTag
-                  v-if="chain.rootRecord.type === 'userOptimize' || chain.rootRecord.type === 'contextUserOptimize'"
+                  v-if="chain.rootRecord.type === 'userOptimize'"
                   type="success"
                   size="small"
                 >
                   {{ t('common.user') }}
+                </NTag>
+                <!-- 上下文模式优化标签 -->
+                <NTag
+                  v-if="isMessageOptimizationType(chain.rootRecord.type)"
+                  type="warning"
+                  size="small"
+                >
+                  {{ t('contextMode.optimizationMode.message') }}
+                </NTag>
+                <NTag
+                  v-if="chain.rootRecord.type === 'contextUserOptimize'"
+                  type="success"
+                  size="small"
+                >
+                  {{ t('contextMode.optimizationMode.variable') }}
                 </NTag>
                 <!-- 图像模式优化类型标签 -->
                 <NTag
@@ -82,6 +97,13 @@
                   size="small"
                 >
                   {{ t('image.capability.image2image') }}
+                </NTag>
+                <NTag
+                  v-if="chain.rootRecord.type === 'multiimageOptimize'"
+                  type="error"
+                  size="small"
+                >
+                  {{ t('imageMode.multiimage') }}
                 </NTag>
               </NSpace>
               <NButton
@@ -108,7 +130,7 @@
               v-for="record in chain.versions.slice().reverse()"
               :key="record.id"
               :default-expanded-names="expandedVersions[record.id] ? [record.id] : []"
-              @update:expanded-names="(names) => expandedVersions[record.id] = names.includes(record.id)"
+              @update:expanded-names="(names: Array<string | number> | null) => expandedVersions[record.id] = Array.isArray(names) && names.includes(record.id)"
             >
               <NCollapseItem
                 :name="record.id"
@@ -225,7 +247,7 @@ const emit = defineEmits<{
   (e: 'deleteChain', chainId: string): void
 }>()
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars, no-unused-vars
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _toast = useToast()
 const expandedVersions = ref<Record<string, boolean>>({})
 const searchQuery = ref('')
@@ -259,7 +281,7 @@ const filteredHistory = computed(() => {
 })
 
 // 切换版本展开/收起状态
-// eslint-disable-next-line @typescript-eslint/no-unused-vars, no-unused-vars
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const _toggleVersion = (recordId: string) => {
   expandedVersions.value = {
     ...expandedVersions.value,
@@ -304,6 +326,10 @@ const truncateText = (text: string, maxLength: number) => {
   return text.slice(0, maxLength) + '...'
 }
 
+const isMessageOptimizationType = (recordType: string) => {
+  return recordType === 'conversationMessageOptimize' || recordType === 'contextSystemOptimize'
+}
+
 // 获取功能模式标签类型
 const getFunctionModeTagType = (recordType: string) => {
   if (recordType.includes('image')) {
@@ -317,9 +343,14 @@ const getFunctionModeTagType = (recordType: string) => {
 
 // 获取功能模式标签文本
 const getFunctionModeLabel = (recordType: string) => {
-  if (recordType.includes('image')) {
+  // 图像模式类型
+  const imageTypes = ['imageOptimize', 'contextImageOptimize', 'imageIterate', 'text2imageOptimize', 'image2imageOptimize', 'multiimageOptimize']
+  // 上下文模式类型（包含新旧类型名以支持向后兼容）
+  const contextTypes = ['conversationMessageOptimize', 'contextSystemOptimize', 'contextUserOptimize', 'contextIterate']
+
+  if (imageTypes.includes(recordType)) {
     return t('nav.imageMode')
-  } else if (recordType.includes('context')) {
+  } else if (contextTypes.includes(recordType)) {
     return t('nav.contextMode')
   } else {
     return t('nav.basicMode')

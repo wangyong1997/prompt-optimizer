@@ -6,6 +6,7 @@
       :is-default-model="manager.isDefaultModel"
       @test="handleTestConnection"
       @edit="handleEditModel"
+      @clone="handleCloneModel"
       @enable="handleEnableModel"
       @disable="handleDisableModel"
       @delete="handleDeleteModel"
@@ -20,15 +21,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, provide, ref } from 'vue'
+import { onMounted, provide, ref, h } from 'vue'
 
 import { useI18n } from 'vue-i18n'
+import { isRunningInElectron } from '@prompt-optimizer/core'
 import { useTextModelManager } from '../composables/model/useTextModelManager'
 import TextModelList from './TextModelList.vue'
 import TextModelEditModal from './TextModelEditModal.vue'
+import { useDialog } from 'naive-ui'
 
 const emit = defineEmits(['modelsUpdated'])
 const { t } = useI18n()
+const dialog = useDialog()
 const manager = useTextModelManager()
 provide('textModelManager', manager)
 
@@ -49,7 +53,31 @@ const handleModelUpdated = async (id?: string) => {
 }
 
 const handleTestConnection = async (id: string) => {
-  await manager.testConfigConnection(id)
+  const runTest = async () => {
+    await manager.testConfigConnection(id)
+  }
+
+  if (!isRunningInElectron()) {
+    const model = manager.models.value.find(m => m.id === id)
+    if (model) {
+      const isCorsRestricted = !!model.providerMeta?.corsRestricted
+      if (isCorsRestricted) {
+        const providerName = model.providerMeta?.name || model.providerMeta?.id || 'Unknown Provider'
+        dialog.warning({
+          title: t('modelManager.corsRestrictedTag'),
+          content: () => h('div', { style: 'white-space: pre-line;' }, t('modelManager.corsRestrictedConfirm', { provider: providerName })),
+          positiveText: t('common.confirm'),
+          negativeText: t('common.cancel'),
+          // Don't block dialog close while the async test runs.
+          onPositiveClick: () => {
+            void runTest()
+          }
+        })
+        return
+      }
+    }
+  }
+  await runTest()
 }
 
 const handleEditModel = async (id: string) => {
@@ -74,6 +102,16 @@ const updateEditModalVisibility = (value: boolean) => {
   // 当模态框关闭时，重置编辑状态但不重置表单数据
   if (!value) {
     editingModelId.value = null
+  }
+}
+
+const handleCloneModel = async (id: string) => {
+  try {
+    await manager.prepareForClone(id)
+    showEditModal.value = true
+    editingModelId.value = null
+  } catch {
+    // prepareForClone already handles user-facing errors
   }
 }
 

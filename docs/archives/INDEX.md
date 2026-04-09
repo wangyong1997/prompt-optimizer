@@ -76,11 +76,36 @@
   - 为UI框架迁移建立了完整的方法论和最佳实践
 
 ### 状态管理系统
+- **[117-pinia-refactoring](./117-pinia-refactoring/)** - Pinia 状态管理重构 🔄
+  - 引入 Pinia 状态管理库，构建 6+1 session store 架构
+  - 解决 session 存储竞态条件
+  - 移除废弃的 `$services` 插件机制，统一服务访问方式
+  - Claude Code + Codex AI 联合审查确保代码质量
+
+- **[129-session-store-single-source-refactor](./129-session-store-single-source-refactor/)** - Session Store 单一真源架构重构 ⭐
+  - 实现单一真源（Single Source of Truth）原则
+  - 解决跨模式状态污染问题，修复 P0 Bug（测试结果不显示）
+  - 新增图像存储服务（ImageStorageService）使用独立 IndexedDB
+  - 优化代码分割，主 bundle 减少 57KB
+  - 拆分单体组件为细粒度工作区（Basic/Image 模式）
+
 - **[126-submode-persistence](./126-submode-persistence/)** - 子模式持久化功能 💾
   - 实现三大功能模式(基础/上下文/图像)的独立子模式状态持久化
   - 解决状态隔离、跨页面同步和双层状态一致性问题
   - 修复图像模式刷新后文件上传按钮不显示的bug
   - 建立完整的状态管理最佳实践和设计模式
+
+### 上下文模式（Pro）
+- **[127-multi-turn-dialogue-mode-optimization](./127-multi-turn-dialogue-mode-optimization/)** - 多轮对话模式优化 💬
+  - 基于消息 ID 的稳定选择与映射（避免索引漂移）
+  - messageChainMap（消息 → 工作链）复用策略与自动应用
+  - 多轮对话（Pro-System / Conversation）体验与实施记录
+
+### 上下文模式（UI/变量）
+- **[128-context-ui-and-variable-system-refactor](./128-context-ui-and-variable-system-refactor/)** - 上下文 UI 改造与变量系统重构 🧩
+  - 子模式选择器/快捷操作栏布局调整
+  - 变量系统简化：移除会话变量，引入测试区临时变量
+  - 任务计划、设计与实施记录归档
 
 ## 🔧 问题修复系列
 

@@ -3,8 +3,41 @@
         class="variable-aware-input-wrapper"
         :style="completionColorVars"
     >
-        <!-- CodeMirror 编辑器容器 -->
-        <div ref="editorRef" class="codemirror-container"></div>
+        <!-- CodeMirror 编辑器容器 (外观对齐 Naive UI NInput textarea) -->
+        <div class="codemirror-container" :class="codemirrorContainerClass">
+            <div ref="editorRef" class="codemirror-editor"></div>
+
+            <!-- 清空按钮 (仅在启用 clearable 且有内容时显示) -->
+            <button
+                v-if="showClearButton"
+                class="vai-clear"
+                type="button"
+                :title="t('common.clear')"
+                :aria-label="t('common.clear')"
+                @mousedown.prevent
+                @click="handleClear"
+            >
+                <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                >
+                    <path d="M18 6L6 18" />
+                    <path d="M6 6l12 12" />
+                </svg>
+            </button>
+
+            <!-- 字符计数 (与 NInput show-count 一致) -->
+            <div v-if="showCount" class="vai-count" aria-hidden="true">
+                {{ countText }}
+            </div>
+        </div>
 
         <!-- 悬浮的"提取为变量"按钮 -->
         <NPopover
@@ -50,8 +83,14 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 
-import { EditorView, basicSetup } from "codemirror";
+import { EditorView, highlightSpecialChars, drawSelection, dropCursor, rectangularSelection, crosshairCursor, keymap, placeholder as cmPlaceholder } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
+import { history, historyKeymap, defaultKeymap, indentWithTab } from "@codemirror/commands";
+import { foldGutter, foldKeymap, indentOnInput, bracketMatching, defaultHighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { closeBrackets, completionKeymap } from "@codemirror/autocomplete";
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { lintKeymap } from "@codemirror/lint";
+
 import { NPopover, NButton, useThemeVars } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import { useToast } from "../../composables/ui/useToast";
@@ -86,6 +125,14 @@ interface Props {
     readonly?: boolean;
     /** 自动调整高度 */
     autosize?: boolean | { minRows?: number; maxRows?: number };
+
+    /** 是否显示清空按钮 (对齐 NInput clearable) */
+    clearable?: boolean;
+    /** 是否显示字符计数 (对齐 NInput show-count) */
+    showCount?: boolean;
+    /** 最大输入长度 (对齐 NInput maxLength/maxlength) */
+    maxLength?: number;
+
     /** 已存在的全局变量名列表 */
     existingGlobalVariables?: string[];
     /** 已存在的临时变量名列表 */
@@ -104,6 +151,8 @@ const props = withDefaults(defineProps<Props>(), {
     placeholder: "",
     readonly: false,
     autosize: () => ({ minRows: 4, maxRows: 12 }),
+    clearable: false,
+    showCount: false,
     existingGlobalVariables: () => [],
     existingTemporaryVariables: () => [],
     predefinedVariables: () => [],
@@ -146,8 +195,52 @@ const completionColorVars = computed(() => ({
     "--variable-completion-selected-color":
         themeVars.value.primaryColor || "#2080f0",
 }));
+
+const showClearButton = computed(
+    () => props.clearable && !props.readonly && props.modelValue.length > 0,
+);
+
+const showCount = computed(() => props.showCount);
+
+const countText = computed(() => {
+    const length = props.modelValue.length;
+
+    if (
+        typeof props.maxLength === "number" &&
+        Number.isFinite(props.maxLength) &&
+        props.maxLength >= 0
+    ) {
+        return `${length}/${props.maxLength}`;
+    }
+
+    return String(length);
+});
+
+const codemirrorContainerClass = computed(() => ({
+    'vai-has-clear': props.clearable,
+    'vai-has-count': props.showCount,
+    'vai-readonly': props.readonly,
+}));
+
 const editorRef = ref<HTMLElement>();
 let editorView: EditorView | null = null;
+
+const handleClear = () => {
+    if (props.readonly) return;
+    if (!editorView) {
+        emit("update:modelValue", "");
+        return;
+    }
+
+    editorView.dispatch({
+        changes: { from: 0, to: editorView.state.doc.length, insert: "" },
+        selection: { anchor: 0 },
+    });
+    editorView.focus();
+};
+
+// 防止“外部 props 同步 -> CodeMirror dispatch -> updateListener emit -> 再同步”的回路
+const isSyncingFromModel = ref(false);
 
 // 创建 Compartment 用于动态更新扩展
 const autocompletionCompartment = new Compartment();
@@ -341,16 +434,18 @@ const handleAddMissingVariable = (varName: string) => {
     emit("add-missing-variable", varName);
 
     // 显示成功提示
-    window.$message?.success(
-        t("variableDetection.addSuccess", { name: varName }),
-    );
+    message.success(t("variableDetection.addSuccess", { name: varName }));
 };
 
 // 计算编辑器高度
 const editorHeight = computed(() => {
     const autosize = props.autosize;
     if (typeof autosize === "boolean") {
-        return autosize ? "auto" : "200px";
+        // autosize === true 时，完全自适应容器高度（100%）
+        // autosize === false 时，使用固定高度
+        return autosize
+            ? { min: '100%', max: 'none' }
+            : { min: '200px', max: '200px' };
     }
     const minRows = autosize.minRows || 4;
     const maxRows = autosize.maxRows || 12;
@@ -384,7 +479,7 @@ const checkSelection = () => {
             validation.reason &&
             validation.reason !== "未选中任何文本"
         ) {
-            window.$message?.warning(validation.reason);
+            message.warning(validation.reason);
         }
         return;
     }
@@ -445,22 +540,16 @@ const handleExtractionConfirm = (data: {
 
     const placeholder = `{{${data.variableName}}}`;
     const text = editorView.state.doc.toString();
-    let newValue = text;
-
-    if (data.replaceAll && occurrenceCount.value > 1) {
-        // 全部替换
-        newValue = replaceAllOccurrencesOutsideVariables(
-            text,
-            currentSelection.value.rawText,
-            placeholder,
-        );
-    } else {
-        // 仅替换当前选中的文本
-        newValue =
-            text.substring(0, currentSelection.value.start) +
-            placeholder +
-            text.substring(currentSelection.value.end);
-    }
+    const newValue =
+        data.replaceAll && occurrenceCount.value > 1
+            ? replaceAllOccurrencesOutsideVariables(
+                  text,
+                  currentSelection.value.rawText,
+                  placeholder,
+              )
+            : text.substring(0, currentSelection.value.start) +
+              placeholder +
+              text.substring(currentSelection.value.end);
 
     // 更新编辑器内容
     editorView.dispatch({
@@ -483,14 +572,14 @@ const handleExtractionConfirm = (data: {
 
     // 显示成功消息
     if (data.replaceAll && occurrenceCount.value > 1) {
-        window.$message?.success(
+        message.success(
             t("variableExtraction.extractSuccessAll", {
                 count: occurrenceCount.value,
                 variableName: data.variableName,
             }),
         );
     } else {
-        window.$message?.success(
+        message.success(
             t("variableExtraction.extractSuccess", {
                 variableName: data.variableName,
             }),
@@ -513,18 +602,38 @@ onMounted(() => {
     const startState = EditorState.create({
         doc: props.modelValue,
         extensions: [
-            basicSetup,
-            // 变量高亮 (使用 Compartment)
-            highlighterCompartment.of(variableHighlighter(extractVariables)),
-            // 变量自动完成 (使用 Compartment)
+            highlightSpecialChars(),
+            history(),
+            foldGutter(),
+            drawSelection(),
+            dropCursor(),
+            EditorState.allowMultipleSelections.of(true),
+            indentOnInput(),
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+            bracketMatching(),
+            closeBrackets(),
             autocompletionCompartment.of(
                 variableAutocompletion(
                     globalVariablesMap.value,
                     temporaryVariablesMap.value,
                     predefinedVariablesMap.value,
                     variableDetectionLabels.value,
-                ),
+                )
             ),
+            rectangularSelection(),
+            crosshairCursor(),
+            highlightSelectionMatches(),
+            keymap.of([
+                ...defaultKeymap,
+                ...searchKeymap,
+                ...historyKeymap,
+                ...foldKeymap,
+                ...completionKeymap,
+                ...lintKeymap,
+                indentWithTab
+            ]),
+            // 变量高亮 (使用 Compartment)
+            highlighterCompartment.of(variableHighlighter(extractVariables)),
             // 缺失变量提示
             missingVariableTooltipCompartment.of(
                 missingVariableTooltip(
@@ -558,7 +667,11 @@ onMounted(() => {
                 ),
             ),
             // 主题适配
-            themeCompartment.of(createThemeExtension(themeVars.value)),
+            themeCompartment.of(
+                createThemeExtension(themeVars.value, {
+                    readonly: props.readonly,
+                }),
+            ),
             // 🆕 只读状态
             readOnlyCompartment.of(EditorState.readOnly.of(props.readonly)),
             // 🆕 自动换行功能
@@ -567,7 +680,36 @@ onMounted(() => {
             EditorView.updateListener.of((update) => {
                 if (update.docChanged) {
                     const newValue = update.state.doc.toString();
-                    emit("update:modelValue", newValue);
+
+                    // 对齐 NInput maxlength 行为：先做长度限制，再同步到外部，避免短时间内发出超长值。
+                    if (
+                        !isSyncingFromModel.value &&
+                        typeof props.maxLength === "number" &&
+                        Number.isFinite(props.maxLength) &&
+                        props.maxLength >= 0 &&
+                        newValue.length > props.maxLength
+                    ) {
+                        const trimmed = newValue.slice(0, props.maxLength);
+                        const anchor = Math.min(
+                            update.state.selection.main.anchor,
+                            trimmed.length,
+                        );
+
+                        update.view.dispatch({
+                            changes: {
+                                from: 0,
+                                to: update.state.doc.length,
+                                insert: trimmed,
+                            },
+                            selection: { anchor },
+                        });
+                        return;
+                    }
+
+                    // 外部同步导致的变更不回写（避免循环/重复写入）
+                    if (!isSyncingFromModel.value) {
+                        emit("update:modelValue", newValue);
+                    }
                 }
 
                 // 监听选择变化
@@ -575,11 +717,9 @@ onMounted(() => {
                     checkSelection();
                 }
             }),
-            // 占位符
+            // 占位符（使用官方 placeholder 扩展）
             placeholderCompartment.of(
-                EditorView.contentAttributes.of({
-                    "aria-placeholder": props.placeholder,
-                }),
+                props.placeholder ? cmPlaceholder(props.placeholder) : []
             ),
         ],
     });
@@ -595,12 +735,16 @@ watch(
     () => props.modelValue,
     (newValue) => {
         if (editorView && newValue !== editorView.state.doc.toString()) {
+            isSyncingFromModel.value = true;
             editorView.dispatch({
                 changes: {
                     from: 0,
                     to: editorView.state.doc.length,
                     insert: newValue,
                 },
+            });
+            queueMicrotask(() => {
+                isSyncingFromModel.value = false;
             });
         }
     },
@@ -674,9 +818,7 @@ watch(
         editorView.dispatch({
             effects: [
                 placeholderCompartment.reconfigure(
-                    EditorView.contentAttributes.of({
-                        "aria-placeholder": placeholder,
-                    }),
+                    placeholder ? cmPlaceholder(placeholder) : []
                 ),
             ],
         });
@@ -692,6 +834,11 @@ watch(
         editorView.dispatch({
             effects: [
                 readOnlyCompartment.reconfigure(EditorState.readOnly.of(readonly)),
+                themeCompartment.reconfigure(
+                    createThemeExtension(themeVars.value, {
+                        readonly,
+                    }),
+                ),
             ],
         });
     },
@@ -705,7 +852,11 @@ watch(
 
         editorView.dispatch({
             effects: [
-                themeCompartment.reconfigure(createThemeExtension(vars)),
+                themeCompartment.reconfigure(
+                    createThemeExtension(vars, {
+                        readonly: props.readonly,
+                    }),
+                ),
                 missingVariableTooltipCompartment.reconfigure(
                     missingVariableTooltip(
                         handleAddMissingVariable,
@@ -798,13 +949,24 @@ defineExpose({
 .variable-aware-input-wrapper {
     position: relative;
     width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
 }
 
 .codemirror-container {
+    position: relative;
     border: 1px solid var(--n-border-color);
     border-radius: var(--n-border-radius);
     overflow: hidden;
     transition: border-color 0.3s var(--n-bezier);
+    flex: 1;
+    min-height: 0;
+}
+
+.codemirror-editor {
+    height: 100%;
+    width: 100%;
 }
 
 .codemirror-container:hover {
@@ -841,12 +1003,71 @@ defineExpose({
     word-break: break-word;
 }
 
-/* 占位符样式 */
-.codemirror-container :deep(.cm-content[aria-placeholder]:empty::before) {
-    content: attr(aria-placeholder);
+/* 为右上角清空按钮、右下角计数预留空间，避免内容被遮挡 */
+.codemirror-container.vai-has-clear :deep(.cm-content) {
+    padding-right: 36px;
+}
+
+.codemirror-container.vai-has-count :deep(.cm-content) {
+    padding-right: 56px;
+    padding-bottom: 28px;
+}
+
+.vai-clear {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 2;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--n-text-color-3);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0.8;
+    transition:
+        background-color 0.2s var(--n-bezier),
+        color 0.2s var(--n-bezier),
+        opacity 0.2s var(--n-bezier);
+}
+
+.vai-clear:hover {
+    background-color: var(--n-hover-color);
+    color: var(--n-text-color-1);
+    opacity: 1;
+}
+
+.vai-clear:active {
+    background-color: var(--n-hover-color);
+}
+
+.vai-clear:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--n-primary-color-suppl);
+}
+
+.vai-count {
+    position: absolute;
+    right: 10px;
+    bottom: 6px;
+    z-index: 1;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--n-text-color-3);
+    pointer-events: none;
+    user-select: none;
+}
+
+/* 占位符样式（使用 CodeMirror 官方 placeholder 扩展） */
+.codemirror-container :deep(.cm-placeholder) {
     color: var(--n-placeholder-color);
     pointer-events: none;
-    position: absolute;
+    font-style: normal;
 }
 
 /* 自动完成面板样式 */

@@ -1,5 +1,5 @@
 import type { UnifiedParameterDefinition } from '../model/parameter-schema'
-import { ModelConfig } from '../model/types';
+import type { ModelConfig, TextModelConfig as ModelTextModelConfig } from '../model/types';
 
 // === 核心架构类型（三层分离：Provider → Model → Configuration） ===
 
@@ -27,6 +27,12 @@ export interface TextProvider {
   readonly name: string
   /** 描述信息 */
   readonly description?: string
+  /**
+   * 浏览器环境是否会被 CORS 限制（无法直接请求该 API）。
+   * - true: Web 端可能因 CORS 被浏览器拦截，建议使用 Desktop 或自行配置代理
+   * - false/undefined: 未标记为 CORS 限制（不代表一定可用，仍可能受网络/鉴权等影响）
+   */
+  readonly corsRestricted?: boolean
   /** 是否必须提供 API Key */
   readonly requiresApiKey: boolean
   /** 默认 API 地址 */
@@ -35,6 +41,8 @@ export interface TextProvider {
   readonly supportsDynamicModels: boolean
   /** 连接参数结构定义（如果支持动态获取） */
   readonly connectionSchema?: ConnectionSchema
+  /** API Key 获取页面 URL（可选）*/
+  readonly apiKeyUrl?: string
 }
 
 export type ParameterDefinition = UnifiedParameterDefinition;
@@ -68,44 +76,11 @@ export interface TextModel {
 }
 
 /**
- * 用户文本模型配置（Configuration层）
- * 新架构的配置结构，完全独立于传统ModelConfig
+ * 用户文本模型配置（Configuration 层）
  *
- * 设计原则：
- * - 自包含：包含完整的providerMeta和modelMeta副本
- * - 独立性：不继承ModelConfig，是全新的类型
- * - 类型安全：通过元数据副本提供编译时类型检查
+ * 统一复用 model/types 中的 TextModelConfig，避免双定义漂移。
  */
-export interface TextModelConfig {
-  // === 基础标识 ===
-  /** 配置唯一标识 */
-  id: string
-  /** 用户自定义配置名称 */
-  name: string
-  /** 是否启用 */
-  enabled: boolean
-
-  // === 自包含元数据副本 ===
-  /** 完整Provider元数据副本 */
-  providerMeta: TextProvider
-  /** 完整Model元数据副本 */
-  modelMeta: TextModel
-
-  // === 连接配置 ===
-  /** 连接参数配置 */
-  connectionConfig: {
-    /** API 密钥 */
-    apiKey?: string
-    /** 覆盖默认 API 地址 */
-    baseURL?: string
-    /** 支持其他连接参数（如 organization, timeout 等） */
-    [key: string]: any
-  }
-
-  // === 参数覆盖 ===
-  /** 覆盖modelMeta中的默认参数 */
-  paramOverrides?: Record<string, unknown>
-}
+export type TextModelConfig = ModelTextModelConfig
 
 /**
  * 工具调用相关类型
@@ -143,6 +118,19 @@ export interface Message {
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+}
+
+export interface ImageUnderstandingImageInput {
+  b64: string;
+  mimeType?: string;
+}
+
+export interface ImageUnderstandingRequest {
+  systemPrompt?: string;
+  userPrompt: string;
+  images: ImageUnderstandingImageInput[];
+  paramOverrides?: Record<string, unknown>;
+  responseMimeType?: string;
 }
 
 /**
@@ -322,6 +310,25 @@ export interface ITextProviderAdapter {
     messages: Message[],
     config: TextModelConfig,
     tools: ToolDefinition[],
+    callbacks: StreamHandlers
+  ): Promise<void>
+
+  /**
+   * Send an image-understanding request with one or more reference images.
+   * Providers that do not support multimodal text understanding should throw at request time.
+   */
+  sendImageUnderstanding(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig
+  ): Promise<LLMResponse>
+
+  /**
+   * Stream an image-understanding request with one or more reference images.
+   * Providers that do not support multimodal streaming should throw at request time.
+   */
+  sendImageUnderstandingStream(
+    request: ImageUnderstandingRequest,
+    config: TextModelConfig,
     callbacks: StreamHandlers
   ): Promise<void>
 

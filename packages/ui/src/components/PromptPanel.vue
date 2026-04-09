@@ -27,22 +27,39 @@
                             v-if="versions && versions.length > 0"
                             :size="4"
                             class="version-tags"
+                            data-testid="prompt-panel-version-tags"
                         >
+                            <!-- V3, V2, V1... 按降序显示（最新版本在前） -->
                             <NTag
                                 v-for="version in versions.slice().reverse()"
                                 :key="version.id"
                                 :type="
-                                    currentVersionId === version.id
+                                    currentVersionId === version.id && !isV0Selected
                                         ? 'success'
                                         : 'default'
                                 "
                                 size="small"
                                 @click="switchVersion(version)"
-                                :cursor="'pointer'"
-                                :bordered="currentVersionId !== version.id"
+                                :bordered="currentVersionId !== version.id || isV0Selected"
+                                :data-testid="`prompt-panel-version-tag-v${version.version}`"
                             >
                                 V{{ version.version }}
                             </NTag>
+                            <!-- 🆕 原始版本固定放在最后 -->
+                            <NTooltip v-if="showV0Tag" trigger="hover">
+                                <template #trigger>
+                                    <NTag
+                                        :type="isV0Selected ? 'success' : 'default'"
+                                        size="small"
+                                        @click="switchToV0"
+                                        :bordered="!isV0Selected"
+                                        data-testid="prompt-panel-version-tag-v0"
+                                    >
+                                        {{ t("prompt.originalVersion") }}
+                                    </NTag>
+                                </template>
+                                {{ t("prompt.originalVersionTooltip") }}
+                            </NTooltip>
                         </NSpace>
                     </NSpace>
                 </NSpace>
@@ -82,6 +99,75 @@
                             </NIcon>
                         </template>
                     </NButton>
+                    <!-- 应用到会话 -->
+                    <NButton
+                        v-if="showApplyButton && versions && versions.length > 0"
+                        @click="$emit('apply-to-conversation')"
+                        type="success"
+                        size="small"
+                        ghost
+                        :disabled="isOptimizing || !currentVersionId"
+                    >
+                        <template #icon>
+                            <NIcon>
+                                <svg
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M5 13l4 4L19 7"
+                                    />
+                                </svg>
+                            </NIcon>
+                        </template>
+                        {{ t("prompt.applyToConversation") }}
+                    </NButton>
+                    <!-- 评估入口：分数徽章或评估按钮 -->
+                    <div v-if="showEvaluation && optimizedPrompt" class="evaluation-entry">
+                        <EvaluationScoreBadge
+                            v-if="hasEvaluationResult || isEvaluating"
+                            :score="evaluationScore"
+                            :level="evaluationScoreLevel"
+                            :loading="isEvaluating"
+                            :result="evaluationResult"
+                            :type="evaluationType"
+                            :stale="isEvaluationStale"
+                            :stale-message="evaluationStaleMessage"
+                            size="small"
+                            @show-detail="handleShowEvaluationDetail"
+                            @evaluate="handleEvaluate"
+                            @evaluate-with-feedback="handleEvaluateWithFeedback"
+                            @apply-improvement="handleApplyImprovement"
+                            @apply-patch="handleApplyPatch"
+                        />
+                        <FocusAnalyzeButton
+                            v-else
+                            :type="evaluationType"
+                            :label="t('prompt.analyze')"
+                            :loading="isEvaluating"
+                            :button-props="{ size: 'small', type: 'tertiary' }"
+                            @evaluate="handleEvaluate"
+                            @evaluate-with-feedback="handleEvaluateWithFeedback"
+                        >
+                            <template #icon>
+                                <AnalyzeActionIcon />
+                            </template>
+                        </FocusAnalyzeButton>
+                    </div>
+                    <!-- 保存本地修改（手动编辑/直接修复后建议保存到历史版本） -->
+                    <NButton
+                        v-if="showSaveChanges"
+                        type="default"
+                        size="small"
+                        class="min-w-[100px]"
+                        @click="handleSaveChanges"
+                    >
+                        {{ t("prompt.saveChanges") }}
+                    </NButton>
                     <!-- 继续优化按钮 -->
                     <NButton
                         v-if="optimizedPrompt"
@@ -91,6 +177,7 @@
                         type="primary"
                         size="small"
                         class="min-w-[100px]"
+                        data-testid="prompt-panel-continue-optimize"
                     >
                         <template #icon>
                             <svg
@@ -120,6 +207,7 @@
 
         <!-- 内容区域：使用 OutputDisplay 组件 -->
         <OutputDisplay
+            :test-id="testId ? testId + '-output' : undefined"
             ref="outputDisplayRef"
             :content="optimizedPrompt"
             :original-content="previousVersionText"
@@ -143,7 +231,11 @@
         />
     </NFlex>
     <!-- 迭代优化弹窗 -->
-    <Modal v-model="showIterateInput" @confirm="submitIterate">
+    <Modal
+        v-model="showIterateInput"
+        data-testid="prompt-panel-iterate-modal"
+        @confirm="submitIterate"
+    >
         <template #title>
             {{ templateTitleText }}
         </template>
@@ -175,6 +267,7 @@
                     :placeholder="t('prompt.iteratePlaceholder')"
                     :rows="3"
                     :autosize="{ minRows: 3, maxRows: 6 }"
+                    data-testid="prompt-panel-iterate-input"
                 />
             </div>
         </div>
@@ -189,6 +282,7 @@
                 :loading="isIterating"
                 type="primary"
                 size="medium"
+                data-testid="prompt-panel-iterate-submit"
             >
                 {{
                     isIterating
@@ -203,12 +297,22 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { NButton, NText, NInput, NCard, NFlex, NSpace, NTag, NIcon } from "naive-ui";
+import { NButton, NText, NInput, NCard, NFlex, NSpace, NTag, NIcon, NTooltip } from "naive-ui";
 import { useToast } from '../composables/ui/useToast';
+import { useEvaluationContextOptional } from '../composables/prompt/useEvaluationContext';
+import { useProContextOptional } from '../composables/prompt/useProContext';
 import TemplateSelect from "./TemplateSelect.vue";
 import Modal from "./Modal.vue";
 import OutputDisplay from "./OutputDisplay.vue";
-import type { Template, PromptRecord } from "@prompt-optimizer/core";
+import { AnalyzeActionIcon, EvaluationScoreBadge, FocusAnalyzeButton } from "./evaluation";
+import type {
+    EvaluationContentBlock,
+    EvaluationTarget,
+    EvaluationType,
+    PatchOperation,
+    PromptRecord,
+    Template,
+} from "@prompt-optimizer/core";
 
 const { t } = useI18n();
 const toast = useToast();
@@ -220,6 +324,11 @@ interface IteratePayload {
 }
 
 const props = defineProps({
+    /** E2E/测试定位用的 testId（用于 OutputDisplay 根节点 data-testid） */
+    testId: {
+        type: String,
+        default: undefined,
+    },
     optimizedPrompt: {
         type: String,
         default: "",
@@ -270,7 +379,138 @@ const props = defineProps({
         type: Boolean,
         default: false,
     },
+    evaluationTypeOverride: {
+        type: String as () => "prompt-only" | "prompt-iterate" | undefined,
+        default: undefined,
+    },
+    showApplyButton: {
+        type: Boolean,
+        default: false,
+    },
 });
+
+// 使用评估上下文（可选，不强制要求父组件提供）
+const evaluation = useEvaluationContextOptional();
+
+// 使用 Pro 模式上下文（可选，仅在 Pro 模式下由 Workspace 提供）
+const proContextRef = useProContextOptional();
+
+// 获取当前版本的迭代需求（如果有）- 需要在评估类型计算之前定义
+const currentIterationNote = computed(() => {
+    if (!props.versions || !props.currentVersionId) return "";
+    const currentVersion = props.versions.find((v) => v.id === props.currentVersionId);
+    return currentVersion?.iterationNote || "";
+});
+
+// 计算评估相关的状态（从 context 获取）
+const showEvaluation = computed(() => !!evaluation);
+
+// 判断当前使用的评估类型：有迭代需求用 prompt-iterate，否则用 prompt-only
+const evaluationType = computed<'prompt-only' | 'prompt-iterate'>(() => {
+    if (props.evaluationTypeOverride) {
+        return props.evaluationTypeOverride;
+    }
+    const hasIterateNote = currentIterationNote.value.trim().length > 0;
+    return hasIterateNote ? 'prompt-iterate' : 'prompt-only';
+});
+
+// 根据评估类型获取对应的状态
+const isEvaluating = computed(() => {
+    if (!evaluation) return false;
+    return evaluationType.value === 'prompt-iterate'
+        ? evaluation.isEvaluatingPromptIterate.value
+        : evaluation.isEvaluatingPromptOnly.value;
+});
+
+const evaluationScore = computed(() => {
+    if (!evaluation) return null;
+    return evaluationType.value === 'prompt-iterate'
+        ? evaluation.promptIterateScore.value
+        : evaluation.promptOnlyScore.value;
+});
+
+const evaluationScoreLevel = computed(() => {
+    if (!evaluation) return null;
+    return evaluationType.value === 'prompt-iterate'
+        ? evaluation.promptIterateLevel.value
+        : evaluation.promptOnlyLevel.value;
+});
+
+const hasEvaluationResult = computed(() => {
+    if (!evaluation) return false;
+    return evaluationType.value === 'prompt-iterate'
+        ? evaluation.hasPromptIterateResult.value
+        : evaluation.hasPromptOnlyResult.value;
+});
+
+const evaluationResult = computed(() => {
+    if (!evaluation) return null;
+    return evaluationType.value === 'prompt-iterate'
+        ? evaluation.state['prompt-iterate'].result
+        : evaluation.state['prompt-only'].result;
+});
+
+const promptOnlyEvaluationFingerprint = ref("");
+const promptIterateEvaluationFingerprint = ref("");
+
+const buildEvaluationFingerprint = (
+    type: "prompt-only" | "prompt-iterate",
+): string => {
+    const prompt = (props.optimizedPrompt || "").trim();
+    if (type === "prompt-iterate") {
+        return `${prompt}::${currentIterationNote.value.trim()}`;
+    }
+    return prompt;
+};
+
+const isEvaluationStale = computed(() => {
+    if (!hasEvaluationResult.value) return false;
+
+    const storedFingerprint =
+        evaluationType.value === "prompt-iterate"
+            ? promptIterateEvaluationFingerprint.value
+            : promptOnlyEvaluationFingerprint.value;
+
+    if (!storedFingerprint) return false;
+    return storedFingerprint !== buildEvaluationFingerprint(evaluationType.value);
+});
+
+const evaluationStaleMessage = computed(() =>
+    evaluationType.value === "prompt-iterate"
+        ? t("evaluation.stale.promptIterate")
+        : t("evaluation.stale.promptOnly"),
+);
+
+const buildDesignContextBlock = (): EvaluationContentBlock | undefined => {
+    const context = proContextRef?.value;
+    if (!context) return undefined;
+
+    const content = JSON.stringify(context, null, 2);
+    if (!content.trim()) return undefined;
+
+    return {
+        kind: "json",
+        label: props.advancedModeEnabled
+            ? t("evaluation.designContext.advanced")
+            : t("evaluation.designContext.basic"),
+        content,
+    };
+};
+
+const buildEvaluationTarget = (): EvaluationTarget => {
+    const workspacePrompt = props.optimizedPrompt || "";
+    const referencePrompt = (props.originalPrompt || "").trim();
+    const normalizedWorkspacePrompt = workspacePrompt.trim();
+
+    return {
+        workspacePrompt,
+        referencePrompt:
+            referencePrompt && referencePrompt !== normalizedWorkspacePrompt
+                ? props.originalPrompt
+                : undefined,
+        designContext: buildDesignContextBlock(),
+    };
+};
 
 const emit = defineEmits<{
     "update:optimizedPrompt": [value: string];
@@ -285,9 +525,17 @@ const emit = defineEmits<{
     ];
     "update:selectedIterateTemplate": [template: Template | null];
     switchVersion: [version: PromptRecord];
+    switchToV0: [version: PromptRecord];  // 🆕 V0 切换专用事件
     templateSelect: [template: Template];
     "save-favorite": [data: { content: string; originalContent?: string }];
     "open-preview": [];
+    "apply-to-conversation": [];
+    // 评估相关事件（evaluate 和 show-evaluation-detail 已通过 inject 的 evaluation context 直接处理）
+    "apply-improvement": [payload: { improvement: string; type: EvaluationType }];
+    /** 应用补丁 */
+    "apply-patch": [payload: { operation: PatchOperation }];
+    /** 保存当前编辑内容为新版本（不触发 LLM） */
+    "save-local-edit": [payload: { note?: string }];
 }>();
 
 const showIterateInput = ref(false);
@@ -307,6 +555,129 @@ const templateType = computed<"iterate" | "contextIterate" | "imageIterate">(
 const outputDisplayRef = ref<InstanceType<typeof OutputDisplay> | null>(null);
 const iterateTemplateSelectRef = ref<{ refresh?: () => void } | null>(null);
 
+// 🆕 V0 特殊处理：跟踪是否选中 V0
+const isV0Selected = ref(false);
+
+// 🆕 是否显示 V0 标签（只有当 versions 存在且有原始内容时才显示）
+const showV0Tag = computed(() => {
+    if (!props.versions || props.versions.length === 0) return false;
+    if (!props.versions[0]?.originalPrompt) return false;
+    // 如果链本身已经从 V0 开始（version===0），则无需额外的“V0 原始内容”标签，避免重复
+    return !props.versions.some((v) => v.version === 0);
+});
+
+const currentVersionOptimizedPrompt = computed(() => {
+    if (!props.versions || !props.currentVersionId) return "";
+    return props.versions.find((v) => v.id === props.currentVersionId)?.optimizedPrompt || "";
+});
+
+const showSaveChanges = computed(() => {
+    if (!props.optimizedPrompt) return false;
+    if (!props.versions || props.versions.length === 0) return false;
+    if (!props.currentVersionId) return false;
+    if (isV0Selected.value) return false;
+    return props.optimizedPrompt !== currentVersionOptimizedPrompt.value;
+});
+
+// 🆕 切换到 V0（原始内容）
+const switchToV0 = async () => {
+    if (!props.versions || props.versions.length === 0) return;
+
+    const v0Content = props.versions[0].originalPrompt;
+    if (!v0Content) return;
+
+    // 标记为 V0 已选中
+    isV0Selected.value = true;
+
+    // 🔧 触发专用的 switchToV0 事件，让父组件知道这是 V0 切换
+    // 传递第一个版本对象，父组件应该使用 originalPrompt 而不是 optimizedPrompt
+    emit("switchToV0", props.versions[0]);
+
+    // 更新显示内容为原始内容
+    emit("update:optimizedPrompt", v0Content);
+
+    // 等待父组件更新内容
+    await nextTick();
+
+    // 强制刷新 OutputDisplay 的内容
+    if (outputDisplayRef.value) {
+        outputDisplayRef.value.forceRefreshContent();
+    }
+
+    console.log("[PromptPanel] 已切换到 V0（原始内容）");
+};
+
+// 处理评估按钮点击（触发评估）
+const executeEvaluate = async (userFeedback?: string, preferredType?: EvaluationType) => {
+    if (!props.optimizedPrompt?.trim()) {
+        toast.error(t("prompt.error.noOptimizedPrompt"));
+        return;
+    }
+
+    if (!evaluation) {
+        toast.error(t("evaluation.error.serviceNotReady"));
+        return;
+    }
+
+    const iterateRequirement = currentIterationNote.value.trim();
+    const targetType =
+        preferredType === "prompt-only" || preferredType === "prompt-iterate"
+            ? preferredType
+            : evaluationType.value;
+
+    const target = buildEvaluationTarget();
+
+    if (targetType === "prompt-iterate" && iterateRequirement) {
+        // 有迭代需求时使用 prompt-iterate 评估
+        await evaluation.evaluatePromptIterate({
+            target,
+            iterateRequirement,
+            focus: userFeedback,
+        });
+
+        if (evaluation.state["prompt-iterate"].result) {
+            promptIterateEvaluationFingerprint.value =
+                buildEvaluationFingerprint("prompt-iterate");
+        }
+    } else {
+        // 无迭代需求时使用 prompt-only 评估
+        await evaluation.evaluatePromptOnly({
+            target,
+            focus: userFeedback,
+        });
+
+        if (evaluation.state["prompt-only"].result) {
+            promptOnlyEvaluationFingerprint.value =
+                buildEvaluationFingerprint("prompt-only");
+        }
+    }
+};
+
+// 处理评估按钮点击（触发评估）
+const handleEvaluate = async () => {
+    await executeEvaluate();
+};
+
+const handleEvaluateWithFeedback = async (payload: { type: EvaluationType; feedback: string }) => {
+    await executeEvaluate(payload.feedback, payload.type);
+};
+
+// 处理显示评估详情
+const handleShowEvaluationDetail = () => {
+    if (!evaluation) return;
+    evaluation.showDetail(evaluationType.value);
+};
+
+// 处理应用改进建议（仍需要 emit，因为需要父组件打开迭代弹窗）
+const handleApplyImprovement = (payload: { improvement: string; type: EvaluationType }) => {
+    emit("apply-improvement", payload);
+};
+
+// 处理应用补丁
+const handleApplyPatch = (payload: { operation: PatchOperation }) => {
+    emit("apply-patch", payload);
+};
+
 // 计算标题文本
 const templateTitleText = computed(() => {
     return t("prompt.iterateTitle");
@@ -319,7 +690,8 @@ const templateSelectText = computed(() => {
 
 // 计算上一版本的文本用于显示
 const previousVersionText = computed(() => {
-    if (!props.versions || props.versions.length === 0) {
+    // ✅ 增强：确保 versions 是数组（避免路由渲染时 props 未传递导致的类型错误）
+    if (!Array.isArray(props.versions) || props.versions.length === 0) {
         return props.originalPrompt || "";
     }
 
@@ -347,10 +719,6 @@ const previousVersionText = computed(() => {
 // }
 
 const handleIterate = () => {
-    if (!props.selectedIterateTemplate) {
-        toast.error(t("prompt.error.noTemplate"));
-        return;
-    }
     showIterateInput.value = true;
 };
 
@@ -359,18 +727,26 @@ const cancelIterate = () => {
     iterateInput.value = "";
 };
 
-const submitIterate = () => {
-    if (!iterateInput.value.trim()) return;
+const dispatchIterate = (input: string): boolean => {
+    const trimmedInput = input.trim();
+    if (!trimmedInput || props.isIterating) return false;
+
     if (!props.selectedIterateTemplate) {
         toast.error(t("prompt.error.noTemplate"));
-        return;
+        return false;
     }
 
     emit("iterate", {
         originalPrompt: props.originalPrompt,
-        optimizedPrompt: props.optimizedPrompt,
-        iterateInput: iterateInput.value.trim(),
+        optimizedPrompt: outputDisplayRef.value?.content || props.optimizedPrompt,
+        iterateInput: trimmedInput,
     });
+
+    return true;
+};
+
+const submitIterate = () => {
+    if (!dispatchIterate(iterateInput.value)) return;
 
     // 重置输入
     iterateInput.value = "";
@@ -379,7 +755,15 @@ const submitIterate = () => {
 
 // 添加版本切换函数
 const switchVersion = async (version: PromptRecord) => {
-    if (version.id === props.currentVersionId) return;
+    if (version.id === props.currentVersionId && !isV0Selected.value) return;
+
+    if (showSaveChanges.value) {
+        const ok = window.confirm(t("prompt.unsavedChangesConfirm"));
+        if (!ok) return;
+    }
+
+    // 🆕 清除 V0 选中状态
+    isV0Selected.value = false;
 
     // 发出版本切换事件
     emit("switchVersion", version);
@@ -396,6 +780,10 @@ const switchVersion = async (version: PromptRecord) => {
         versionId: version.id,
         version: version.version,
     });
+};
+
+const handleSaveChanges = () => {
+    emit("save-local-edit", { note: t("prompt.saveChangesNote") });
 };
 
 // 监听流式状态变化，强制退出编辑状态
@@ -425,8 +813,27 @@ const refreshIterateTemplateSelect = () => {
     }
 };
 
+// 打开迭代弹窗并可选预填充文本
+const openIterateDialog = (input?: string) => {
+    if (input) {
+        iterateInput.value = input;
+    }
+    showIterateInput.value = true;
+};
+
+const runIterateWithInput = (input: string) => {
+    const started = dispatchIterate(input);
+    if (started) {
+        iterateInput.value = "";
+        showIterateInput.value = false;
+    }
+    return started;
+};
+
 defineExpose({
     refreshIterateTemplateSelect,
+    openIterateDialog,
+    runIterateWithInput,
 });
 </script>
 
@@ -438,9 +845,31 @@ defineExpose({
     gap: 4px;
 }
 
+/* 版本标签可点击样式 */
+.version-tag-clickable {
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.15s ease;
+}
+
+.version-tag-clickable:hover {
+    transform: translateY(-1px);
+}
+
+.version-tag-clickable:active {
+    transform: translateY(0);
+}
+
 @media (max-width: 640px) {
     .version-container {
         margin-top: 4px;
     }
+}
+
+/* 评估入口样式 */
+.evaluation-entry {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
 }
 </style>

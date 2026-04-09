@@ -1,12 +1,13 @@
 import { IModelManager, ModelConfig, TextModelConfig } from './types';
 import { IStorageProvider } from '../storage/types';
 import { StorageAdapter } from '../storage/adapter';
-import { defaultModels } from './defaults';
+import { getAllModels, getBuiltinModelIds } from './defaults';
 import { ModelConfigError } from '../llm/errors';
 import { validateOverrides } from './parameter-utils';
 import { ElectronConfigManager, isElectronRenderer } from './electron-config';
 import { CORE_SERVICE_KEYS } from '../../constants/storage-keys';
 import { ImportExportError } from '../../interfaces/import-export';
+import { IMPORT_EXPORT_ERROR_CODES } from '../../constants/error-codes';
 import {
   convertLegacyToTextModelConfig,
   convertLegacyToTextModelConfigWithRegistry,
@@ -47,7 +48,7 @@ export class ModelManager implements IModelManager {
         console.log('[ModelManager] Lazy-loaded TextAdapterRegistry');
       } catch (error) {
         console.error('[ModelManager] Failed to load TextAdapterRegistry:', error);
-        throw new ModelConfigError('无法加载模型适配器注册表');
+        throw new ModelConfigError('Failed to load model adapter registry');
       }
     }
     return this.registry;
@@ -108,7 +109,7 @@ export class ModelManager implements IModelManager {
 
               if (isTextModelConfig(existingModel)) {
                 // 已经是新格式，保留用户配置，仅在缺失关键字段时补齐默认值
-                const updatedModel = { ...existingModel } as TextModelConfig;
+                let updatedModel = { ...existingModel } as TextModelConfig;
                 let patched = false;
 
                 if (!updatedModel.providerMeta && defaultConfig.providerMeta) {
@@ -125,6 +126,41 @@ export class ModelManager implements IModelManager {
                   updatedModels[key] = updatedModel;
                   hasUpdates = true;
                   console.log(`[ModelManager] Patched missing metadata for model: ${key}`);
+                }
+
+                const backfillableFields = this.getBackfillableBuiltinConnectionFields(
+                  key,
+                  updatedModel,
+                  defaultConfig
+                );
+                const shouldAutoEnable = this.shouldAutoEnableBuiltinModel(
+                  key,
+                  updatedModel,
+                  defaultConfig,
+                  backfillableFields
+                );
+
+                // 内置模型在环境变量新增后，需要把缺失的必填连接字段回填到已有存储配置中。
+                if (backfillableFields.length > 0 || shouldAutoEnable) {
+                  const nextConnectionConfig = {
+                    ...(updatedModel.connectionConfig || {})
+                  }
+                  for (const field of backfillableFields) {
+                    nextConnectionConfig[field] = defaultConfig.connectionConfig?.[field]
+                  }
+
+                  updatedModel = {
+                    ...updatedModel,
+                    connectionConfig: nextConnectionConfig,
+                    enabled: shouldAutoEnable ? true : updatedModel.enabled
+                  };
+                  updatedModels[key] = updatedModel;
+                  hasUpdates = true;
+                  if (shouldAutoEnable) {
+                    console.log(`[ModelManager] Auto-enabled builtin model with new connection fields: ${key}`);
+                  } else {
+                    console.log(`[ModelManager] Backfilled missing connection fields for builtin model: ${key}`);
+                  }
                 }
               } else if (isLegacyConfig(existingModel)) {
                 // 旧格式，尝试使用 Registry 转换为新格式
@@ -179,20 +215,20 @@ export class ModelManager implements IModelManager {
 
   /**
    * 获取默认模型配置（返回TextModelConfig格式）
+   * 注意：每次调用都会重新计算，确保环境变量变化能被感知
    */
   private getDefaultModels(): Record<string, TextModelConfig> {
     // 在Electron环境下使用配置管理器生成配置
     if (isElectronRenderer()) {
       const configManager = ElectronConfigManager.getInstance();
       if (configManager.isInitialized()) {
-        // ElectronConfigManager需要更新以返回TextModelConfig
-        // 目前先使用fallback
-        console.warn('[ModelManager] ElectronConfigManager返回旧格式，使用fallback defaults');
+        // ElectronConfigManager 已支持 getAllModels()
+        return configManager.generateDefaultModels();
       }
     }
 
-    // 使用新的TextModelConfig格式默认配置
-    return defaultModels;
+    // 调用函数重新计算（而非使用静态常量），确保环境变量变化能被感知
+    return getAllModels();
   }
 
   /**
@@ -223,6 +259,60 @@ export class ModelManager implements IModelManager {
   }
 
   /**
+   * 旧存储数据里 providerMeta 可能缺少新字段；用当前 adapter 的 provider 元数据补齐。
+   *
+   * 目前主要用于回填 `corsRestricted`，以便 UI 能正确展示 CORS 受限标签。
+   */
+  private patchProviderMeta(config: TextModelConfig): TextModelConfig {
+    const providerMeta = config.providerMeta
+    if (!providerMeta) {
+      return config
+    }
+
+    const providerId = (providerMeta.id || config.modelMeta?.providerId || '').toLowerCase()
+
+    // Historical metadata might incorrectly mark Ollama as CORS-restricted.
+    // Ollama can be configured (CORS/reverse-proxy), so we force-disable the tag.
+    if (providerId === 'ollama') {
+      if (providerMeta.corsRestricted === false) {
+        return config
+      }
+      return {
+        ...config,
+        providerMeta: {
+          ...providerMeta,
+          corsRestricted: false
+        }
+      }
+    }
+
+    if (providerMeta.corsRestricted !== undefined) {
+      return config
+    }
+
+    try {
+      if (!providerId || !this.registry) {
+        return config
+      }
+
+      const latestProvider = this.registry.getAdapter(providerId).getProvider()
+      if (latestProvider.corsRestricted === undefined) {
+        return config
+      }
+
+      return {
+        ...config,
+        providerMeta: {
+          ...providerMeta,
+          corsRestricted: latestProvider.corsRestricted
+        }
+      }
+    } catch {
+      return config
+    }
+  }
+
+  /**
    * 从存储获取模型配置，如果不存在则返回默认配置
    * 返回any类型以兼容新旧格式
    */
@@ -245,8 +335,8 @@ export class ModelManager implements IModelManager {
     await this.ensureInitialized();
     const models = await this.getModelsFromStorage();
 
-    // 转换为 TextModelConfig 数组
-    return Object.entries(models).map(([key, config]) => {
+    // 转换为 TextModelConfig 数组（先完成格式/字段迁移）
+    const migratedConfigs = Object.entries(models).map(([key, config]) => {
       let textConfig: TextModelConfig
 
       // 检查是否已经是新格式
@@ -265,6 +355,21 @@ export class ModelManager implements IModelManager {
       // 读时迁移：合并 customParamOverrides 到 paramOverrides
       return this.migrateConfig(textConfig)
     });
+
+    const needsProviderMetaPatch = migratedConfigs.some(
+      (cfg) => cfg.providerMeta && cfg.providerMeta.corsRestricted === undefined
+    )
+
+    if (needsProviderMetaPatch) {
+      // Best-effort: ensure registry is available for patching provider metadata.
+      try {
+        await this.getRegistry()
+      } catch {
+        // ignore - registry is only used for optional metadata patching
+      }
+    }
+
+    return migratedConfigs.map((cfg) => this.patchProviderMeta(cfg))
   }
 
   /**
@@ -295,7 +400,20 @@ export class ModelManager implements IModelManager {
     }
 
     // 读时迁移：合并 customParamOverrides 到 paramOverrides
-    return this.migrateConfig(textConfig)
+    const migrated = this.migrateConfig(textConfig)
+    const needsProviderMetaPatch =
+      !!migrated.providerMeta && migrated.providerMeta.corsRestricted === undefined
+
+    if (needsProviderMetaPatch) {
+      // Best-effort: ensure registry is available for patching provider metadata.
+      try {
+        await this.getRegistry()
+      } catch {
+        // ignore - registry is only used for optional metadata patching
+      }
+    }
+
+    return this.patchProviderMeta(migrated)
   }
 
   /**
@@ -508,6 +626,66 @@ export class ModelManager implements IModelManager {
   }
 
   /**
+   * 获取可从默认配置回填到内置模型中的缺失必填连接字段
+   */
+  private getBackfillableBuiltinConnectionFields(
+    modelId: string,
+    storedConfig: TextModelConfig,
+    defaultConfig: TextModelConfig
+  ): string[] {
+    const builtinIds = getBuiltinModelIds();
+    if (!builtinIds.includes(modelId)) {
+      return [];
+    }
+
+    const requiredFields = defaultConfig.providerMeta.connectionSchema?.required || ['apiKey'];
+    return requiredFields.filter((field) => {
+      const storedValue = storedConfig.connectionConfig?.[field];
+      const defaultValue = defaultConfig.connectionConfig?.[field];
+      return !this.hasConnectionValue(storedValue) && this.hasConnectionValue(defaultValue);
+    });
+  }
+
+  /**
+   * 判断是否应该自动启用内置模型
+   * 条件：内置模型 + 存储的配置为 disabled + 回填后能满足所有必填连接字段
+   */
+  private shouldAutoEnableBuiltinModel(
+    modelId: string,
+    storedConfig: TextModelConfig,
+    defaultConfig: TextModelConfig,
+    backfillableFields?: string[]
+  ): boolean {
+    const builtinIds = getBuiltinModelIds();
+    if (!builtinIds.includes(modelId)) {
+      return false;
+    }
+
+    if (storedConfig.enabled !== false) {
+      return false;
+    }
+
+    const fieldsToBackfill = backfillableFields ?? this.getBackfillableBuiltinConnectionFields(modelId, storedConfig, defaultConfig);
+    if (fieldsToBackfill.length === 0) {
+      return false;
+    }
+
+    const requiredFields = defaultConfig.providerMeta.connectionSchema?.required || ['apiKey'];
+    const mergedConnectionConfig: Record<string, unknown> = {
+      ...(storedConfig.connectionConfig || {})
+    };
+    for (const field of fieldsToBackfill) {
+      mergedConnectionConfig[field] = defaultConfig.connectionConfig?.[field];
+    }
+
+    return requiredFields.every((field) => this.hasConnectionValue(mergedConnectionConfig[field]));
+  }
+
+  private hasConnectionValue(value: unknown): boolean {
+    return typeof value === 'string' ? value.trim().length > 0 : !!value;
+  }
+
+  /**
    * 验证 TextModelConfig 配置
    */
   private validateTextModelConfig(config: TextModelConfig): void {
@@ -587,7 +765,8 @@ export class ModelManager implements IModelManager {
       throw new ImportExportError(
         'Failed to export model data',
         await this.getDataType(),
-        error as Error
+        error as Error,
+        IMPORT_EXPORT_ERROR_CODES.EXPORT_FAILED,
       );
     }
   }
@@ -598,7 +777,12 @@ export class ModelManager implements IModelManager {
   async importData(data: any): Promise<void> {
     // 基本格式验证：必须是数组
     if (!Array.isArray(data)) {
-      throw new Error('Invalid model data format: data must be an array of model configurations');
+      throw new ImportExportError(
+        'Invalid model data format: data must be an array of model configurations',
+        await this.getDataType(),
+        undefined,
+        IMPORT_EXPORT_ERROR_CODES.VALIDATION_ERROR,
+      );
     }
 
     const models = data as Array<TextModelConfig | (ModelConfig & { key: string })>;

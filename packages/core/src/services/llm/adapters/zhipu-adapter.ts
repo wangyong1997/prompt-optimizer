@@ -11,11 +11,22 @@ interface ModelOverride {
 
 const ZHIPU_STATIC_MODELS: ModelOverride[] = [
   {
-    id: 'glm-4.6',
-    name: 'GLM-4.6',
-    description: '',
+    id: 'glm-4.7',
+    name: 'GLM-4.7',
+    description: 'GLM-4.7 是最新的旗舰模型系列，专为智能体应用打造的基础模型',
     capabilities: {
       supportsTools: true,
+      supportsReasoning: true,
+      maxContextLength: 128000
+    }
+  },
+  {
+    id: 'glm-4.6',
+    name: 'GLM-4.6',
+    description: 'GLM-4.6 是最新的旗舰模型系列，专为智能体应用打造的基础模型',
+    capabilities: {
+      supportsTools: true,
+      supportsReasoning: true,
       maxContextLength: 128000
     }
   }
@@ -30,6 +41,7 @@ export class ZhipuAdapter extends OpenAIAdapter {
       requiresApiKey: true,
       defaultBaseURL: 'https://open.bigmodel.cn/api/paas/v4',
       supportsDynamicModels: true,
+      apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
       connectionSchema: {
         required: ['apiKey'],
         optional: ['baseURL'],

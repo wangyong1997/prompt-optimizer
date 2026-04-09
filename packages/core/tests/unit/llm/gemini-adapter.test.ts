@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { GeminiAdapter } from '../../../src/services/llm/adapters/gemini-adapter';
 import type { TextModelConfig, Message } from '../../../src/services/llm/types';
 
-// 不使用 mock，测试实际的 SDK 行为
+// 单元测试不应触发真实网络请求，必要处通过最小 mock 隔离 SDK
 
 describe('GeminiAdapter', () => {
   let adapter: GeminiAdapter;
@@ -148,10 +148,94 @@ describe('GeminiAdapter', () => {
         }
       };
 
-      // 注意：实际的错误会在运行时由 SDK 抛出
-      await expect(
-        adapter.sendMessage(mockMessages, configWithoutKey)
-      ).rejects.toThrow();
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      // 避免调用真实 SDK / 网络：注入一个会拒绝的 client
+      (adapter as any).createClient = () => ({
+        models: {
+          generateContent: vi.fn().mockRejectedValue(new Error('Missing API key'))
+        }
+      });
+
+      await expect(adapter.sendMessage(mockMessages, configWithoutKey)).rejects.toThrow(
+        'Missing API key'
+      );
+
+      errorSpy.mockRestore();
     });
   });
+
+  describe('sendImageUnderstandingStream', () => {
+    it('streams multimodal responses with inline image data', async () => {
+      const generateContentStream = vi.fn().mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield {
+            candidates: [{
+              content: {
+                parts: [{ text: '视觉' }],
+              },
+            }],
+          }
+          yield {
+            candidates: [{
+              content: {
+                parts: [{ text: '结果' }],
+              },
+            }],
+          }
+        },
+      })
+
+      ;(adapter as any).createClient = () => ({
+        models: {
+          generateContentStream,
+        },
+      })
+
+      const callbacks = {
+        onToken: vi.fn(),
+        onReasoningToken: vi.fn(),
+        onComplete: vi.fn(),
+        onError: vi.fn(),
+      }
+
+      await (adapter as any).sendImageUnderstandingStream(
+        {
+          systemPrompt: 'system prompt',
+          userPrompt: 'describe this image',
+          images: [
+            {
+              b64: 'ZmFrZQ==',
+              mimeType: 'image/png',
+            },
+          ],
+        },
+        mockConfig,
+        callbacks,
+      )
+
+      expect(generateContentStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: mockConfig.modelMeta.id,
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: 'describe this image' },
+                {
+                  inlineData: {
+                    mimeType: 'image/png',
+                    data: 'ZmFrZQ==',
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      )
+      expect(callbacks.onToken).toHaveBeenCalledWith('视觉')
+      expect(callbacks.onToken).toHaveBeenCalledWith('结果')
+      expect(callbacks.onComplete).toHaveBeenCalled()
+    })
+  })
 });

@@ -16,6 +16,8 @@ describe('ImageAdapterRegistry', () => {
     expect(providerIds).toContain('openai')
     expect(providerIds).toContain('seedream')
     expect(providerIds).toContain('siliconflow')
+    expect(providerIds).toContain('ollama')
+    expect(providerIds).toContain('cloudflare')
   })
 
   it('should return providers with correct structure', () => {
@@ -108,6 +110,6 @@ describe('ImageAdapterRegistry', () => {
   })
 
   it('should throw error for unknown provider', () => {
-    expect(() => registry.getAdapter('unknown')).toThrow('未知图像提供商: unknown')
+    expect(() => registry.getAdapter('unknown')).toThrow()
   })
 })

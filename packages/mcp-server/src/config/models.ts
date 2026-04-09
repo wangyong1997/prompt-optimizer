@@ -3,7 +3,7 @@
  * 完全复用 core 包的模型管理功能
  */
 
-import { ModelManager } from '@prompt-optimizer/core';
+import { ModelManager, type TextModelConfig } from '@prompt-optimizer/core';
 
 /**
  * 为 MCP 服务器设置默认模型
@@ -23,13 +23,19 @@ export async function setupDefaultModel(
     throw new Error('No enabled models found in core defaultModels');
   }
 
-  let selectedModel: [string, any] | undefined;
+  let selectedModel: [string, TextModelConfig] | undefined;
 
   // 1. 如果指定了 preferredProvider，尝试匹配
   if (preferredProvider) {
+    const normalizedPreferred = preferredProvider.toLowerCase();
+
     selectedModel = availableModels.find(([key, config]) =>
-      config.provider === preferredProvider.toLowerCase() ||
-      config.name.toLowerCase().includes(preferredProvider.toLowerCase())
+      // 直接匹配模型 key（支持 custom_<suffix>）
+      key.toLowerCase() === normalizedPreferred ||
+      // 匹配 provider id
+      String(config.providerMeta?.id || config.modelMeta?.providerId || config.provider || '').toLowerCase() === normalizedPreferred ||
+      // 兼容通过名称模糊匹配
+      String(config.name || '').toLowerCase().includes(normalizedPreferred)
     );
   }
 
@@ -38,7 +44,7 @@ export async function setupDefaultModel(
     selectedModel = availableModels[0];
   }
 
-  const [modelKey, modelConfig] = selectedModel;
+  const [, modelConfig] = selectedModel;
 
   // 3. 使用 core 的模型配置，确保模型启用
   const finalConfig = {
@@ -53,10 +59,8 @@ export async function setupDefaultModel(
   try {
     // 尝试更新现有模型
     await modelManager.updateModel(mcpModelKey, finalConfig);
-  } catch (error) {
+  } catch {
     // 如果模型不存在，则添加新模型
     await modelManager.addModel(mcpModelKey, finalConfig);
   }
 }
-
-

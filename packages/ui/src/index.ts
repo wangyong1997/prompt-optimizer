@@ -30,6 +30,8 @@ export {
   i18n,
 } from "./plugins/i18n";
 
+export { pinia, installPinia, setPiniaServices } from "./plugins/pinia";
+
 // 导出Naive UI配置
 export {
   currentNaiveTheme as naiveTheme,
@@ -56,7 +58,6 @@ export { default as PromptPanelUI } from "./components/PromptPanel.vue";
 export { default as OutputDisplay } from "./components/OutputDisplay.vue";
 export { default as TemplateManagerUI } from "./components/TemplateManager.vue";
 export { default as TemplateSelectUI } from "./components/TemplateSelect.vue";
-export { default as ModelSelectUI } from "./components/ModelSelect.vue";
 export { default as SelectWithConfig } from "./components/SelectWithConfig.vue";
 export { default as HistoryDrawerUI } from "./components/HistoryDrawer.vue";
 export { default as InputPanelUI } from "./components/InputPanel.vue";
@@ -68,10 +69,10 @@ export { default as ThemeToggleUI } from "./components/ThemeToggleUI.vue";
 export { default as ModalUI } from "./components/Modal.vue";
 export { default as PanelUI } from "./components/Panel.vue";
 
-export { default as BasicTestMode } from "./components/BasicTestMode.vue";
 export { default as VariableManagerModal } from "./components/variable/VariableManagerModal.vue";
 export { default as VariableEditor } from "./components/variable/VariableEditor.vue";
 export { default as VariableImporter } from "./components/variable/VariableImporter.vue";
+export { default as ToolManagerModal } from "./components/tool/ToolManagerModal.vue";
 export { default as ConversationManager } from "./components/context-mode/ConversationManager.vue";
 export { default as ContextEditor } from "./components/context-mode/ContextEditor.vue";
 export { default as TestAreaPanel } from "./components/TestAreaPanel.vue";
@@ -91,6 +92,7 @@ export { default as UpdaterModal } from "./components/UpdaterModal.vue";
 export { default as FullscreenDialog } from "./components/FullscreenDialog.vue";
 export { default as InputWithSelect } from "./components/InputWithSelect.vue";
 export { default as MarkdownRenderer } from "./components/MarkdownRenderer.vue";
+export { default as XmlRenderer } from "./components/XmlRenderer.vue";
 export { default as ToolCallDisplay } from "./components/ToolCallDisplay.vue";
 export { default as FavoriteManagerUI } from "./components/FavoriteManager.vue";
 export { default as CategoryManagerUI } from "./components/CategoryManager.vue";
@@ -99,6 +101,25 @@ export { default as ContextModeActions } from "./components/context-mode/Context
 export { default as PromptPreviewPanel } from "./components/PromptPreviewPanel.vue";
 export { default as ContextSystemWorkspace } from "./components/context-mode/ContextSystemWorkspace.vue";
 export { default as ContextUserWorkspace } from "./components/context-mode/ContextUserWorkspace.vue";
+export { default as ContextUserTestPanel } from "./components/context-mode/ContextUserTestPanel.vue";
+export { default as ConversationTestPanel } from "./components/context-mode/ConversationTestPanel.vue";
+export { default as FunctionModelManagerUI } from "./components/FunctionModelManager.vue";
+export { default as AppPreviewImage } from "./components/media/AppPreviewImage.vue";
+export { default as AppPreviewImageGroup } from "./components/media/AppPreviewImageGroup.vue";
+
+// 基础模式组件已移除静态导出（由 router 动态导入，避免打包进主 bundle）
+// 如需直接使用，请在应用层通过 router 注册或按需动态导入
+// export { default as BasicSystemWorkspace } from "./components/basic-mode/BasicSystemWorkspace.vue";
+// export { default as BasicUserWorkspace } from "./components/basic-mode/BasicUserWorkspace.vue";
+
+// App 布局组件
+export { AppHeaderActions, AppCoreNav, PromptOptimizerApp } from "./components/app-layout";
+
+// Router（由 UI 包提供，应用层应安装此 router 以避免多实例/注入不一致）
+export { router } from "./router";
+
+// 评估组件
+export { EvaluationPanel, EvaluateButton, EvaluationScoreBadge } from "./components/evaluation";
 
 // 导出 Naive UI 组件 (解决组件解析问题)
 export {
@@ -170,6 +191,13 @@ export {
   FavoriteManagerElectronProxy,
   isRunningInElectron,
   waitForElectronApi,
+  // 评估服务
+  EvaluationService,
+  createEvaluationService,
+  // 🆕 变量提取服务
+  createVariableExtractionService,
+  // 🆕 变量值生成服务
+  createVariableValueGenerationService,
 } from "@prompt-optimizer/core";
 
 // 导出类型
@@ -192,17 +220,25 @@ export type {
   IFavoriteManager,
   FavoritePrompt,
   FavoriteCategory,
+  // 评估服务类型
+  IEvaluationService,
+  EvaluationType,
+  EvaluationRequest,
+  EvaluationResponse,
+  EvaluationScore,
+  EvaluationStreamHandlers,
+  // 🆕 变量提取服务类型
+  IVariableExtractionService,
+  VariableExtractionRequest,
+  VariableExtractionResponse,
+  ExtractedVariable,
 } from "@prompt-optimizer/core";
 
 // 导出新增的类型和服务
 export * from "./types";
 export * from "./services";
 
-// 导出快速模板管理器
-export { quickTemplateManager } from "./data/quickTemplates";
-
 // 导出图像模式组件与核心图像服务（转发 core 能力）
-export { default as ImageWorkspace } from "./components/image-mode/ImageWorkspace.vue";
 export { default as ImageModeSelector } from "./components/image-mode/ImageModeSelector.vue";
 export {
   ImageModelManager,

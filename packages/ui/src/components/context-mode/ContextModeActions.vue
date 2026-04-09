@@ -1,22 +1,8 @@
 <template>
   <NFlex align="center" :wrap="false" :size="12">
     <!-- 快捷操作按钮 -->
-    <!-- 全局变量 - 两种模式都显示 -->
+    <!-- 工具管理 -->
     <NButton
-      size="small"
-      type="default"
-      @click="$emit('open-global-variables')"
-      :title="$t('contextMode.actions.globalVariables')"
-    >
-      <template #icon>
-        <span>📊</span>
-      </template>
-      {{ $t('contextMode.actions.globalVariables') }}
-    </NButton>
-
-    <!-- 工具管理 - 仅用户模式显示 -->
-    <NButton
-      v-if="contextMode === 'user'"
       size="small"
       type="default"
       @click="$emit('open-tool-manager')"
@@ -32,14 +18,8 @@
 
 <script setup lang="ts">
 import { NButton, NFlex } from 'naive-ui'
-import { type ContextMode } from '@prompt-optimizer/core'
-
-const props = defineProps<{
-  contextMode: ContextMode
-}>()
 
 const emit = defineEmits<{
-  'open-global-variables': []
   'open-tool-manager': []
 }>()
 </script>
